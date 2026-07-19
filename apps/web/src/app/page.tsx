@@ -29,6 +29,7 @@ type PingState =
 type PendingAction = "create" | "join" | "start" | "submit";
 
 const acknowledgementTimeoutMs = 5_000;
+const rememberedUsernameKey = "bugrace:username";
 
 function isValidUsername(username: string): boolean {
   const trimmedUsername = username.trim();
@@ -37,6 +38,14 @@ function isValidUsername(username: string): boolean {
     trimmedUsername.length <= 20 &&
     !/\p{Cc}/u.test(trimmedUsername)
   );
+}
+
+function rememberUsername(username: string): void {
+  try {
+    window.localStorage.setItem(rememberedUsernameKey, username);
+  } catch {
+    // Browser storage is optional; room entry still works without it.
+  }
 }
 
 export default function Home() {
@@ -72,6 +81,25 @@ export default function Home() {
   const actionTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRequestId = useRef(0);
   const actionPending = useRef(false);
+
+  useEffect(() => {
+    try {
+      const rememberedUsername = window.localStorage.getItem(
+        rememberedUsernameKey,
+      );
+
+      if (rememberedUsername && isValidUsername(rememberedUsername)) {
+        const restoreTimer = window.setTimeout(
+          () => setUsername(rememberedUsername),
+          0,
+        );
+
+        return () => window.clearTimeout(restoreTimer);
+      }
+    } catch {
+      // Browser storage is optional; room entry still works without it.
+    }
+  }, []);
 
   useEffect(() => {
     const cancelPendingAction = () => {
@@ -319,6 +347,7 @@ export default function Home() {
       }
 
       setUsername(normalizedUsername);
+      rememberUsername(normalizedUsername);
       setPlayerId(response.data.playerId);
       setRoom(response.data.room);
     });
@@ -363,6 +392,7 @@ export default function Home() {
         }
 
         setUsername(normalizedUsername);
+        rememberUsername(normalizedUsername);
         setRoomCodeInput(normalizedRoomCode);
         setPlayerId(response.data.playerId);
         setRoom(response.data.room);
@@ -865,11 +895,25 @@ export default function Home() {
                 </div>
 
                 {finalResult ? (
-                  <RaceResults
-                    challenge={race.challenge}
-                    playerId={playerId}
-                    result={finalResult}
-                  />
+                  <>
+                    <RaceResults
+                      challenge={race.challenge}
+                      playerId={playerId}
+                      result={finalResult}
+                    />
+                    <div className="mt-8 border-t border-slate-800 pt-8 text-center">
+                      <button
+                        type="button"
+                        onClick={() => window.location.reload()}
+                        className="rounded-xl bg-cyan-400 px-6 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300"
+                      >
+                        New race
+                      </button>
+                      <p className="mt-3 text-sm text-slate-500">
+                        Return to room selection with your username remembered.
+                      </p>
+                    </div>
+                  </>
                 ) : (
                   <section className="mt-8 border-t border-slate-800 pt-8">
                     <h3 className="text-2xl font-bold">Submit your answer</h3>
