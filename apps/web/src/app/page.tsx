@@ -588,33 +588,57 @@ export default function Home() {
             : "Race finished";
 
   return (
-    <main className="min-h-screen bg-slate-950 px-6 py-12 text-slate-100">
-      <div className="mx-auto w-full max-w-4xl">
-        <header>
-          <p className="mb-3 text-sm font-semibold uppercase tracking-[0.24em] text-cyan-400">
-            Multiplayer debugging
-          </p>
-          <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
-            BugRace AI
-          </h1>
-          <p className="mt-3 text-lg text-slate-400">
-            Real-time multiplayer debugging races
-          </p>
+    <main className="bugrace-shell min-h-screen px-4 py-8 text-slate-100 sm:px-6 sm:py-12">
+      <span aria-hidden="true" className="floating-bug floating-bug-one">
+        🪲
+      </span>
+      <span aria-hidden="true" className="floating-bug floating-bug-two">
+        🐛
+      </span>
+
+      <div className="relative z-10 mx-auto w-full max-w-4xl">
+        <header className="hero-card">
+          <div className="hero-copy">
+            <p className="hero-eyebrow">
+              <span aria-hidden="true">⚡</span>
+              Multiplayer debugging
+            </p>
+            <h1 className="brand-title">BugRace AI</h1>
+            <p className="hero-lede">
+              Spot the bug. Ship the fix. Beat the clock.
+            </p>
+            <div aria-label="Game highlights" className="hero-tags">
+              <span className="hero-tag">🐞 Find bugs</span>
+              <span className="hero-tag">⚙️ Fix fast</span>
+              <span className="hero-tag">🏆 Win the race</span>
+            </div>
+          </div>
+          <div aria-hidden="true" className="hero-mascot-wrap">
+            <span className="hero-mascot">🐞</span>
+            <span className="hero-flag">🏁</span>
+          </div>
         </header>
 
-        <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-5">
+        <div aria-hidden="true" className="race-track">
+          <span className="race-track-racer">🐞</span>
+          <span className="race-track-flag">🏁</span>
+        </div>
+
+        <section className="game-panel mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-5">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <p className="text-sm text-slate-400">Backend status</p>
               <p className="mt-1 inline-flex items-center gap-2 font-medium">
                 <span
                   aria-hidden="true"
-                  className={`h-2.5 w-2.5 rounded-full ${statusClassName}`}
+                  className={`h-2.5 w-2.5 rounded-full ${statusClassName} ${
+                    connectionState === "Connected" ? "status-pulse" : ""
+                  }`}
                 />
                 {connectionState}
               </p>
             </div>
-            <div className="text-right">
+            <div className="text-left sm:text-right">
               <p className="text-sm text-slate-400">Socket ID</p>
               <code className="mt-1 block break-all text-sm text-cyan-300">
                 {socketId ?? "Not available"}
@@ -636,7 +660,7 @@ export default function Home() {
                 connectionState !== "Connected" ||
                 pingState.status === "pending"
               }
-              className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-600"
+              className="game-secondary rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-600"
             >
               {pingState.status === "pending"
                 ? "Waiting for server…"
@@ -676,8 +700,8 @@ export default function Home() {
         ) : null}
 
         {!room ? (
-          <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 sm:p-8">
-            <h2 className="text-2xl font-semibold">Enter the lobby</h2>
+          <section className="game-panel mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 sm:p-8">
+            <h2 className="text-2xl font-semibold">🏁 Enter the lobby</h2>
             <p className="mt-2 text-slate-400">
               Choose a guest name, then create a room or join an existing one.
             </p>
@@ -697,16 +721,18 @@ export default function Home() {
               autoComplete="nickname"
               placeholder="Ada"
               disabled={pendingAction !== null}
-              className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 outline-none focus:border-cyan-400 disabled:opacity-60"
+              className="game-field mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 outline-none focus:border-cyan-400 disabled:opacity-60"
             />
 
             <form onSubmit={createRoom} className="mt-5">
               <button
                 type="submit"
                 disabled={roomActionsDisabled}
-                className="w-full rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                className="game-primary w-full rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
               >
-                {pendingAction === "create" ? "Creating room…" : "Create room"}
+                {pendingAction === "create"
+                  ? "Creating room…"
+                  : "⚡ Create a race"}
               </button>
             </form>
 
@@ -730,19 +756,19 @@ export default function Home() {
                 autoComplete="off"
                 placeholder="ABC234"
                 disabled={pendingAction !== null}
-                className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 font-mono uppercase tracking-[0.25em] outline-none focus:border-cyan-400 disabled:opacity-60"
+                className="game-field mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 font-mono uppercase tracking-[0.25em] outline-none focus:border-cyan-400 disabled:opacity-60"
               />
               <button
                 type="submit"
                 disabled={roomActionsDisabled}
-                className="mt-4 w-full rounded-xl border border-cyan-500 px-5 py-3 font-semibold text-cyan-300 transition hover:bg-cyan-950 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500"
+                className="game-secondary mt-4 w-full rounded-xl border border-cyan-500 px-5 py-3 font-semibold text-cyan-300 transition hover:bg-cyan-950 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500"
               >
-                {pendingAction === "join" ? "Joining room…" : "Join room"}
+                {pendingAction === "join" ? "Joining room…" : "Join the race →"}
               </button>
             </form>
           </section>
         ) : (
-          <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 sm:p-8">
+          <section className="game-panel mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 sm:p-8">
             <div className="flex flex-wrap items-start justify-between gap-5">
               <div>
                 <p className="text-sm text-slate-400">Room code</p>
@@ -754,7 +780,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={copyRoomCode}
-                  className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold hover:border-cyan-400"
+                  className="game-secondary rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold hover:border-cyan-400"
                 >
                   Copy room code
                 </button>
@@ -777,9 +803,14 @@ export default function Home() {
                 {room.players.map((player) => (
                   <li
                     key={player.id}
-                    className="flex items-center justify-between rounded-xl bg-slate-950 px-4 py-3"
+                    className="game-tile flex items-center justify-between rounded-xl bg-slate-950 px-4 py-3"
                   >
-                    <span>{player.username}</span>
+                    <span className="flex items-center">
+                      <span aria-hidden="true" className="player-bug">
+                        {player.isHost ? "🐞" : "🪲"}
+                      </span>
+                      {player.username}
+                    </span>
                     <span className="text-right text-sm text-slate-400">
                       <span className="block">
                         {player.isHost ? "Host" : "Player"}
@@ -798,7 +829,7 @@ export default function Home() {
               <div className="mt-6">
                 {isHost ? (
                   <div>
-                    <label className="mb-4 flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm">
+                    <label className="game-tile mb-4 flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm">
                       <input
                         type="checkbox"
                         checked={requestAiChallenge}
@@ -828,18 +859,18 @@ export default function Home() {
                         connectionState !== "Connected" ||
                         pendingAction !== null
                       }
-                      className="w-full rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                      className="game-primary w-full rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
                     >
                       {room.status === "PREPARING"
                         ? "Generating challenge…"
                         : pendingAction === "start"
                           ? "Starting race…"
-                          : "Start race"}
+                          : "🏁 Start race"}
                     </button>
                   </div>
                 ) : (
-                  <p className="rounded-xl bg-slate-950 px-4 py-3 text-center text-slate-400">
-                    Waiting for the host to start the race.
+                  <p className="game-tile rounded-xl bg-slate-950 px-4 py-3 text-center text-slate-400">
+                    🐛 Waiting for the host to start the race.
                   </p>
                 )}
               </div>
@@ -857,13 +888,13 @@ export default function Home() {
                 <p className="mt-3 text-slate-300">{race.challenge.scenario}</p>
 
                 <dl className="mt-6 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-                  <div className="rounded-xl bg-slate-950 p-4">
+                  <div className="game-tile rounded-xl bg-slate-950 p-4">
                     <dt className="text-slate-500">Language</dt>
                     <dd className="mt-1 font-medium">
                       {race.challenge.language}
                     </dd>
                   </div>
-                  <div className="rounded-xl bg-slate-950 p-4">
+                  <div className="game-tile rounded-xl bg-slate-950 p-4">
                     <dt className="text-slate-500">Starts at</dt>
                     <dd className="mt-1 break-all font-mono text-xs">
                       <time dateTime={new Date(race.startsAt).toISOString()}>
@@ -871,7 +902,7 @@ export default function Home() {
                       </time>
                     </dd>
                   </div>
-                  <div className="rounded-xl bg-slate-950 p-4">
+                  <div className="game-tile rounded-xl bg-slate-950 p-4">
                     <dt className="text-slate-500">Ends at</dt>
                     <dd className="mt-1 break-all font-mono text-xs">
                       <time dateTime={new Date(race.endsAt).toISOString()}>
@@ -879,7 +910,7 @@ export default function Home() {
                       </time>
                     </dd>
                   </div>
-                  <div className="rounded-xl bg-slate-950 p-4">
+                  <div className="timer-card rounded-xl bg-slate-950 p-4">
                     <dt className="text-slate-500">Countdown</dt>
                     <dd className="mt-1 font-medium text-amber-300">
                       {timerLabel}
@@ -889,7 +920,7 @@ export default function Home() {
 
                 <div className="mt-6">
                   <p className="mb-2 text-sm text-slate-400">Buggy code</p>
-                  <pre className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-5 text-sm leading-6 text-slate-200">
+                  <pre className="code-arena overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-5 text-sm leading-6 text-slate-200">
                     <code>{race.challenge.buggyCode}</code>
                   </pre>
                 </div>
@@ -905,9 +936,9 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={() => window.location.reload()}
-                        className="rounded-xl bg-cyan-400 px-6 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300"
+                        className="game-primary rounded-xl bg-cyan-400 px-6 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300"
                       >
-                        New race
+                        🔁 New race
                       </button>
                       <p className="mt-3 text-sm text-slate-500">
                         Return to room selection with your username remembered.
@@ -957,7 +988,7 @@ export default function Home() {
                           }
                           aria-describedby="explanation-count"
                           placeholder="Explain the root cause…"
-                          className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 outline-none focus:border-cyan-400 disabled:opacity-60"
+                          className="game-field mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 outline-none focus:border-cyan-400 disabled:opacity-60"
                         />
                       </div>
 
@@ -994,14 +1025,14 @@ export default function Home() {
                           }
                           aria-describedby="proposed-fix-count"
                           placeholder="Show the corrected TypeScript…"
-                          className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 font-mono text-sm outline-none focus:border-cyan-400 disabled:opacity-60"
+                          className="game-field mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 font-mono text-sm outline-none focus:border-cyan-400 disabled:opacity-60"
                         />
                       </div>
 
                       <button
                         type="submit"
                         disabled={!canSubmit}
-                        className="w-full rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                        className="game-primary w-full rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
                       >
                         {pendingAction === "submit"
                           ? "Submitting…"

@@ -42,10 +42,13 @@ function ParticipantBreakdown({
   const score = entry.score;
 
   return (
-    <article className="rounded-xl border border-slate-800 bg-slate-950 p-5">
+    <article className="game-tile rounded-xl border border-slate-800 bg-slate-950 p-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="text-sm text-slate-500">Rank #{entry.rank}</p>
+          <p className="rank-chip">
+            {entry.rank === 1 ? "🏆" : entry.rank === 2 ? "🥈" : "🏁"} Rank #
+            {entry.rank}
+          </p>
           <h4 className="mt-1 text-xl font-semibold">
             {entry.username}
             {entry.isHost ? " · Host" : ""}
@@ -81,47 +84,47 @@ function ParticipantBreakdown({
       ) : (
         <>
           <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-lg bg-slate-900 p-3">
+            <div className="game-tile rounded-lg bg-slate-900 p-3">
               <dt className="text-slate-500">Root cause</dt>
               <dd className="mt-1 font-semibold">
                 {score.rootCauseScore} / 35
               </dd>
             </div>
-            <div className="rounded-lg bg-slate-900 p-3">
+            <div className="game-tile rounded-lg bg-slate-900 p-3">
               <dt className="text-slate-500">Fix</dt>
               <dd className="mt-1 font-semibold">{score.fixScore} / 35</dd>
             </div>
-            <div className="rounded-lg bg-slate-900 p-3">
+            <div className="game-tile rounded-lg bg-slate-900 p-3">
               <dt className="text-slate-500">Reasoning</dt>
               <dd className="mt-1 font-semibold">
                 {score.reasoningScore} / 20
               </dd>
             </div>
-            <div className="rounded-lg bg-slate-900 p-3">
+            <div className="game-tile rounded-lg bg-slate-900 p-3">
               <dt className="text-slate-500">Semantic subtotal</dt>
               <dd className="mt-1 font-semibold">
                 {score.semanticSubtotal} / 90
               </dd>
             </div>
-            <div className="rounded-lg bg-slate-900 p-3">
+            <div className="game-tile rounded-lg bg-slate-900 p-3">
               <dt className="text-slate-500">Speed</dt>
               <dd className="mt-1 font-semibold">{score.speedScore} / 10</dd>
             </div>
-            <div className="rounded-lg bg-slate-900 p-3">
+            <div className="game-tile rounded-lg bg-slate-900 p-3">
               <dt className="text-slate-500">Accepted after</dt>
               <dd className="mt-1 font-semibold">
                 {formatElapsed(entry.elapsedMs)}
               </dd>
             </div>
-            <div className="rounded-lg bg-slate-900 p-3">
+            <div className="game-tile rounded-lg bg-slate-900 p-3">
               <dt className="text-slate-500">Hints used</dt>
               <dd className="mt-1 font-semibold">{score.hintsUsed}</dd>
             </div>
-            <div className="rounded-lg bg-slate-900 p-3">
+            <div className="game-tile rounded-lg bg-slate-900 p-3">
               <dt className="text-slate-500">Hint penalty</dt>
               <dd className="mt-1 font-semibold">{score.hintPenalty}</dd>
             </div>
-            <div className="rounded-lg bg-slate-900 p-3">
+            <div className="game-tile rounded-lg bg-slate-900 p-3">
               <dt className="text-slate-500">Final score</dt>
               <dd className="mt-1 font-semibold text-cyan-300">
                 {score.finalScore} / 100
@@ -184,7 +187,7 @@ export function RaceResults({ challenge, playerId, result }: RaceResultsProps) {
   );
 
   return (
-    <section className="mt-8 border-t border-slate-800 pt-8">
+    <section className="results-celebration mt-8 border-t border-slate-800 pt-8">
       <p className="text-sm font-semibold uppercase tracking-[0.2em] text-emerald-300">
         Race finished
       </p>
@@ -198,25 +201,25 @@ export function RaceResults({ challenge, playerId, result }: RaceResultsProps) {
       </p>
 
       <dl className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <div className="rounded-xl bg-slate-950 p-4">
+        <div className="game-tile rounded-xl bg-slate-950 p-4">
           <dt className="text-sm text-slate-500">Participants</dt>
           <dd className="mt-1 text-2xl font-bold">
             {result.leaderboard.length}
           </dd>
         </div>
-        <div className="rounded-xl bg-slate-950 p-4">
+        <div className="game-tile rounded-xl bg-slate-950 p-4">
           <dt className="text-sm text-slate-500">Submitted</dt>
           <dd className="mt-1 text-2xl font-bold">{submittedCount}</dd>
         </div>
-        <div className="rounded-xl bg-slate-950 p-4">
+        <div className="game-tile rounded-xl bg-slate-950 p-4">
           <dt className="text-sm text-slate-500">Correct</dt>
           <dd className="mt-1 text-2xl font-bold">{correctCount}</dd>
         </div>
-        <div className="rounded-xl bg-slate-950 p-4">
+        <div className="game-tile rounded-xl bg-slate-950 p-4">
           <dt className="text-sm text-slate-500">Timed out</dt>
           <dd className="mt-1 text-2xl font-bold">{timedOutCount}</dd>
         </div>
-        <div className="rounded-xl bg-slate-950 p-4">
+        <div className="timer-card rounded-xl bg-slate-950 p-4">
           <dt className="text-sm text-slate-500">Your result</dt>
           <dd className="mt-1 text-lg font-bold text-cyan-300">
             {ownEntry
@@ -242,7 +245,7 @@ export function RaceResults({ challenge, playerId, result }: RaceResultsProps) {
             {result.leaderboard.map((entry) => (
               <tr
                 key={entry.playerId}
-                className={`border-b border-slate-800 ${
+                className={`border-b border-slate-800 transition-colors hover:bg-cyan-950/30 ${
                   entry.playerId === playerId ? "bg-cyan-950/50" : ""
                 }`}
               >
@@ -289,7 +292,7 @@ export function RaceResults({ challenge, playerId, result }: RaceResultsProps) {
         </div>
       </div>
 
-      <div className="mt-9 rounded-xl border border-slate-700 bg-slate-950 p-5">
+      <div className="game-tile mt-9 rounded-xl border border-slate-700 bg-slate-950 p-5">
         <h3 className="text-xl font-semibold">Reference solution</h3>
         <p className="mt-2 text-sm text-slate-400">
           Challenge: {challenge.title}
