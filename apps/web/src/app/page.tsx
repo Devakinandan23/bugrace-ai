@@ -586,6 +586,25 @@ export default function Home() {
           : room?.status === "FINALIZING"
             ? "Finalizing evaluations…"
             : "Race finished";
+  const bugRaceProgress =
+    race === null || serverClock === 0
+      ? 0
+      : room?.status === "COUNTDOWN"
+        ? Math.min(
+            100,
+            Math.max(0, (1 - (race.startsAt - serverClock) / 3_000) * 100),
+          )
+        : room?.status === "ACTIVE"
+          ? Math.min(
+              100,
+              Math.max(
+                0,
+                ((serverClock - race.startsAt) /
+                  (race.endsAt - race.startsAt)) *
+                  100,
+              ),
+            )
+          : 100;
 
   return (
     <main className="bugrace-shell min-h-screen px-4 py-8 text-slate-100 sm:px-6 sm:py-12">
@@ -915,6 +934,15 @@ export default function Home() {
                     <dd className="mt-1 font-medium text-amber-300">
                       {timerLabel}
                     </dd>
+                    <div className="countdown-race" aria-hidden="true">
+                      <span
+                        className="countdown-racer"
+                        style={{ left: `${bugRaceProgress}%` }}
+                      >
+                        🐞
+                      </span>
+                      <span className="countdown-finish">🏁</span>
+                    </div>
                   </div>
                 </dl>
 
@@ -1032,15 +1060,23 @@ export default function Home() {
                       <button
                         type="submit"
                         disabled={!canSubmit}
-                        className="game-primary w-full rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                        className="game-primary submit-button w-full rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
                       >
-                        {pendingAction === "submit"
-                          ? "Submitting…"
-                          : hasSubmitted || ownEvaluation
-                            ? "Submitted"
-                            : isEvaluating
-                              ? "Evaluating…"
-                              : "Submit answer"}
+                        <span aria-hidden="true" className="submit-ladybug">
+                          🐞
+                        </span>
+                        <span>
+                          {pendingAction === "submit"
+                            ? "Submitting…"
+                            : hasSubmitted || ownEvaluation
+                              ? "Submitted"
+                              : isEvaluating
+                                ? "Evaluating…"
+                                : "Submit answer"}
+                        </span>
+                        <span aria-hidden="true" className="submit-arrow">
+                          →
+                        </span>
                       </button>
                     </form>
 
