@@ -2,8 +2,10 @@
 
 import type {
   ConnectionPingAcknowledgement,
+  FinalRaceResult,
   PublicRoomState,
   RaceStartedPayload,
+  SubmissionEvaluation,
 } from "@bugrace/shared";
 import type { FormEvent } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -19,7 +21,7 @@ type PingState =
   | { status: "success"; response: ConnectionPingAcknowledgement }
   | { status: "error"; message: string };
 
-type PendingAction = "create" | "join" | "start";
+type PendingAction = "create" | "join" | "start" | "submit";
 
 const acknowledgementTimeoutMs = 5_000;
 
@@ -43,6 +45,13 @@ export default function Home() {
   const [playerId, setPlayerId] = useState<string | null>(null);
   const [room, setRoom] = useState<PublicRoomState | null>(null);
   const [race, setRace] = useState<RaceStartedPayload | null>(null);
+  const [explanation, setExplanation] = useState("");
+  const [proposedFix, setProposedFix] = useState("");
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const [ownEvaluation, setOwnEvaluation] =
+    useState<SubmissionEvaluation | null>(null);
+  const [finalResult, setFinalResult] = useState<FinalRaceResult | null>(null);
+  const [serverClock, setServerClock] = useState(0);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(
     null,
   );
@@ -78,6 +87,9 @@ export default function Home() {
       setPlayerId(null);
       setRoom(null);
       setRace(null);
+      setOwnEvaluation(null);
+      setFinalResult(null);
+      setSubmissionError(null);
       setActionError("Socket disconnected. Reconnect before joining a room.");
     };
 
@@ -98,7 +110,19 @@ export default function Home() {
     const handleRaceStarted = (payload: RaceStartedPayload) => {
       setRoom(payload.room);
       setRace(payload);
+      setExplanation("");
+      setProposedFix("");
+      setOwnEvaluation(null);
+      setFinalResult(null);
+      setSubmissionError(null);
+      setServerClock(Date.now());
       setActionError(null);
+    };
+
+    const handleRaceFinished = (result: FinalRaceResult) => {
+      setFinalResult(result);
+      setSubmissionError(null);
+      setServerClock(Date.now());
     };
 
     socket.on("connect", handleConnect);
@@ -107,6 +131,7 @@ export default function Home() {
     socket.on("connection:ready", handleConnectionReady);
     socket.on("room:state", handleRoomState);
     socket.on("race:started", handleRaceStarted);
+    socket.on("race:finished", handleRaceFinished);
     socket.connect();
 
     return () => {
@@ -116,6 +141,7 @@ export default function Home() {
       socket.off("connection:ready", handleConnectionReady);
       socket.off("room:state", handleRoomState);
       socket.off("race:started", handleRaceStarted);
+      socket.off("race:finished", handleRaceFinished);
       socket.disconnect();
       activeRequestId.current += 1;
       actionPending.current = false;
@@ -130,6 +156,18 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!race || finalResult) {
+      return;
+    }
+
+    const clockTimer = setInterval(() => {
+      setServerClock(Date.now());
+    }, 250);
+
+    return () => clearInterval(clockTimer);
+  }, [race, finalResult]);
+
   const beginAcknowledgedAction = (
     action: PendingAction,
   ): (() => boolean) | null => {
@@ -139,7 +177,11 @@ export default function Home() {
 
     actionPending.current = true;
     setPendingAction(action);
-    setActionError(null);
+    if (action === "submit") {
+      setSubmissionError(null);
+    } else {
+      setActionError(null);
+    }
 
     const requestId = activeRequestId.current + 1;
     activeRequestId.current = requestId;
@@ -153,7 +195,11 @@ export default function Home() {
       actionPending.current = false;
       actionTimeout.current = null;
       setPendingAction(null);
-      setActionError("Server acknowledgement timed out.");
+      if (action === "submit") {
+        setSubmissionError("The server did not confirm your submission.");
+      } else {
+        setActionError("Server acknowledgement timed out.");
+      }
     }, acknowledgementTimeoutMs);
 
     return () => {
@@ -297,6 +343,59 @@ export default function Home() {
     });
   };
 
+  const submitAnswer = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!room || !race || !requireConnectedSocket()) {
+      return;
+    }
+
+    const normalizedExplanation = explanation.trim();
+    const normalizedProposedFix = proposedFix.trim();
+
+    if (
+      normalizedExplanation.length < 10 ||
+      explanation.length > 2_000 ||
+      normalizedProposedFix.length === 0 ||
+      proposedFix.length > 4_000
+    ) {
+      setSubmissionError(
+        "Enter an explanation of at least 10 characters and a proposed fix.",
+      );
+      return;
+    }
+
+    const complete = beginAcknowledgedAction("submit");
+
+    if (!complete) {
+      return;
+    }
+
+    socket.emit(
+      "race:submit",
+      {
+        roomCode: room.code,
+        explanation: normalizedExplanation,
+        proposedFix: normalizedProposedFix,
+      },
+      (response) => {
+        if (!complete()) {
+          return;
+        }
+
+        if (!response.ok) {
+          setSubmissionError(response.error.message);
+          return;
+        }
+
+        setExplanation(normalizedExplanation);
+        setProposedFix(normalizedProposedFix);
+        setOwnEvaluation(response.data.evaluation);
+        setSubmissionError(null);
+      },
+    );
+  };
+
   const testConnection = () => {
     if (!socket.connected) {
       setPingState({ status: "error", message: "Socket is disconnected." });
@@ -359,6 +458,32 @@ export default function Home() {
   const roomActionsDisabled =
     connectionState !== "Connected" || pendingAction !== null;
   const isHost = room !== null && room.hostPlayerId === playerId;
+  const currentPlayer = room?.players.find((player) => player.id === playerId);
+  const hasSubmitted = currentPlayer?.status === "SUBMITTED";
+  const deadlinePassed =
+    race !== null && serverClock > 0 && serverClock >= race.endsAt;
+  const submissionFieldsValid =
+    explanation.trim().length >= 10 &&
+    explanation.length <= 2_000 &&
+    proposedFix.trim().length >= 1 &&
+    proposedFix.length <= 4_000;
+  const canSubmit =
+    connectionState === "Connected" &&
+    room?.status === "ACTIVE" &&
+    serverClock > 0 &&
+    !deadlinePassed &&
+    pendingAction === null &&
+    !hasSubmitted &&
+    ownEvaluation === null &&
+    submissionFieldsValid;
+  const timerLabel =
+    race === null || serverClock === 0
+      ? "Synchronizing server time…"
+      : room?.status === "COUNTDOWN"
+        ? `Starts in ${Math.max(0, Math.ceil((race.startsAt - serverClock) / 1_000))}s`
+        : room?.status === "ACTIVE"
+          ? `${Math.max(0, Math.ceil((race.endsAt - serverClock) / 1_000))}s remaining`
+          : "Race finished";
 
   return (
     <main className="min-h-screen bg-slate-950 px-6 py-12 text-slate-100">
@@ -544,9 +669,14 @@ export default function Home() {
                     className="flex items-center justify-between rounded-xl bg-slate-950 px-4 py-3"
                   >
                     <span>{player.username}</span>
-                    <span className="text-sm text-slate-400">
-                      {player.isHost ? "Host" : "Player"}
-                      {player.id === playerId ? " · You" : ""}
+                    <span className="text-right text-sm text-slate-400">
+                      <span className="block">
+                        {player.isHost ? "Host" : "Player"}
+                        {player.id === playerId ? " · You" : ""}
+                      </span>
+                      <strong className="mt-1 block text-xs tracking-wide text-amber-300">
+                        {player.status}
+                      </strong>
                     </span>
                   </li>
                 ))}
@@ -586,7 +716,7 @@ export default function Home() {
                 </h2>
                 <p className="mt-3 text-slate-300">{race.challenge.scenario}</p>
 
-                <dl className="mt-6 grid gap-4 text-sm sm:grid-cols-3">
+                <dl className="mt-6 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
                   <div className="rounded-xl bg-slate-950 p-4">
                     <dt className="text-slate-500">Language</dt>
                     <dd className="mt-1 font-medium">
@@ -609,6 +739,12 @@ export default function Home() {
                       </time>
                     </dd>
                   </div>
+                  <div className="rounded-xl bg-slate-950 p-4">
+                    <dt className="text-slate-500">Countdown</dt>
+                    <dd className="mt-1 font-medium text-amber-300">
+                      {timerLabel}
+                    </dd>
+                  </div>
                 </dl>
 
                 <div className="mt-6">
@@ -617,6 +753,247 @@ export default function Home() {
                     <code>{race.challenge.buggyCode}</code>
                   </pre>
                 </div>
+
+                {finalResult ? (
+                  <section className="mt-8 border-t border-slate-800 pt-8">
+                    <p className="text-sm font-semibold uppercase tracking-[0.2em] text-emerald-300">
+                      Race finished
+                    </p>
+                    <h3 className="mt-2 text-2xl font-bold">
+                      Final leaderboard
+                    </h3>
+                    <p className="mt-2 text-sm text-slate-400">
+                      Finished at{" "}
+                      {new Date(finalResult.finishedAt).toISOString()}
+                    </p>
+
+                    <div className="mt-5 overflow-x-auto">
+                      <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+                        <thead className="text-slate-400">
+                          <tr className="border-b border-slate-700">
+                            <th className="px-3 py-3">Rank</th>
+                            <th className="px-3 py-3">Player</th>
+                            <th className="px-3 py-3">Result</th>
+                            <th className="px-3 py-3">Root cause</th>
+                            <th className="px-3 py-3">Fix</th>
+                            <th className="px-3 py-3">Reasoning</th>
+                            <th className="px-3 py-3">Final</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {finalResult.leaderboard.map((entry) => (
+                            <tr
+                              key={entry.playerId}
+                              className={`border-b border-slate-800 ${
+                                entry.playerId === playerId
+                                  ? "bg-cyan-950/50"
+                                  : ""
+                              }`}
+                            >
+                              <td className="px-3 py-4 font-semibold">
+                                #{entry.rank}
+                              </td>
+                              <td className="px-3 py-4">
+                                {entry.username}
+                                {entry.playerId === playerId ? " · You" : ""}
+                              </td>
+                              <td className="px-3 py-4">
+                                {entry.correct ? "Correct" : "Incorrect"}
+                              </td>
+                              <td className="px-3 py-4">
+                                {entry.rootCauseScore} / 35
+                              </td>
+                              <td className="px-3 py-4">
+                                {entry.fixScore} / 35
+                              </td>
+                              <td className="px-3 py-4">
+                                {entry.reasoningScore} / 15
+                              </td>
+                              <td className="px-3 py-4 font-semibold text-cyan-300">
+                                {entry.finalScore} / 85
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="mt-8 rounded-xl border border-slate-700 bg-slate-950 p-5">
+                      <h3 className="text-xl font-semibold">
+                        Reference solution
+                      </h3>
+                      <dl className="mt-4 space-y-4 text-sm">
+                        <div>
+                          <dt className="text-slate-500">Root cause</dt>
+                          <dd className="mt-1 text-slate-200">
+                            {finalResult.referenceAnswer.rootCause}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Reference fix</dt>
+                          <dd className="mt-1 font-mono text-slate-200">
+                            {finalResult.referenceAnswer.referenceFix}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Required concepts</dt>
+                          <dd className="mt-2 flex flex-wrap gap-2">
+                            {finalResult.referenceAnswer.requiredConcepts.map(
+                              (concept) => (
+                                <span
+                                  key={concept}
+                                  className="rounded-full border border-slate-700 px-3 py-1 text-slate-300"
+                                >
+                                  {concept}
+                                </span>
+                              ),
+                            )}
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+                  </section>
+                ) : (
+                  <section className="mt-8 border-t border-slate-800 pt-8">
+                    <h3 className="text-2xl font-bold">Submit your answer</h3>
+                    <p className="mt-2 text-sm text-slate-400">
+                      Explain the bug and propose a fix. Submitted code is never
+                      executed.
+                    </p>
+
+                    <form onSubmit={submitAnswer} className="mt-6 space-y-6">
+                      <div>
+                        <div className="flex items-center justify-between gap-4">
+                          <label
+                            className="text-sm font-medium"
+                            htmlFor="explanation"
+                          >
+                            Explanation
+                          </label>
+                          <span
+                            id="explanation-count"
+                            className="text-xs text-slate-500"
+                          >
+                            {explanation.length} / 2,000
+                          </span>
+                        </div>
+                        <textarea
+                          id="explanation"
+                          value={explanation}
+                          onChange={(event) =>
+                            setExplanation(event.target.value)
+                          }
+                          required
+                          minLength={10}
+                          maxLength={2_000}
+                          rows={6}
+                          disabled={hasSubmitted || ownEvaluation !== null}
+                          aria-describedby="explanation-count"
+                          placeholder="Explain the root cause…"
+                          className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 outline-none focus:border-cyan-400 disabled:opacity-60"
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between gap-4">
+                          <label
+                            className="text-sm font-medium"
+                            htmlFor="proposed-fix"
+                          >
+                            Proposed fix
+                          </label>
+                          <span
+                            id="proposed-fix-count"
+                            className="text-xs text-slate-500"
+                          >
+                            {proposedFix.length} / 4,000
+                          </span>
+                        </div>
+                        <textarea
+                          id="proposed-fix"
+                          value={proposedFix}
+                          onChange={(event) =>
+                            setProposedFix(event.target.value)
+                          }
+                          required
+                          maxLength={4_000}
+                          rows={7}
+                          disabled={hasSubmitted || ownEvaluation !== null}
+                          aria-describedby="proposed-fix-count"
+                          placeholder="Show the corrected TypeScript…"
+                          className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 font-mono text-sm outline-none focus:border-cyan-400 disabled:opacity-60"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={!canSubmit}
+                        className="w-full rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                      >
+                        {pendingAction === "submit"
+                          ? "Submitting…"
+                          : hasSubmitted || ownEvaluation
+                            ? "Submitted"
+                            : "Submit answer"}
+                      </button>
+                    </form>
+
+                    {deadlinePassed ? (
+                      <p className="mt-4 text-sm text-rose-300">
+                        The submission deadline has passed.
+                      </p>
+                    ) : null}
+
+                    {submissionError ? (
+                      <p
+                        role="alert"
+                        className="mt-4 rounded-xl border border-rose-900 bg-rose-950/50 px-4 py-3 text-sm text-rose-200"
+                      >
+                        {submissionError}
+                      </p>
+                    ) : null}
+
+                    {ownEvaluation ? (
+                      <div className="mt-6 rounded-xl border border-emerald-900 bg-emerald-950/30 p-5">
+                        <p className="font-semibold text-emerald-300">
+                          Submission accepted
+                        </p>
+                        <h3 className="mt-4 text-xl font-semibold">
+                          Preliminary result
+                        </h3>
+                        <p className="mt-2 text-lg font-semibold">
+                          {ownEvaluation.correct ? "Correct" : "Incorrect"}
+                        </p>
+                        <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+                          <div>
+                            <dt className="text-slate-500">Root cause</dt>
+                            <dd>{ownEvaluation.rootCauseScore} / 35</dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Fix</dt>
+                            <dd>{ownEvaluation.fixScore} / 35</dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Reasoning</dt>
+                            <dd>{ownEvaluation.reasoningScore} / 15</dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Final score</dt>
+                            <dd className="font-semibold text-cyan-300">
+                              {ownEvaluation.finalScore} / 85
+                            </dd>
+                          </div>
+                        </dl>
+                        <p className="mt-4 text-sm text-slate-300">
+                          {ownEvaluation.feedback}
+                        </p>
+                        <p className="mt-4 text-sm text-slate-400">
+                          Waiting for other players.
+                        </p>
+                      </div>
+                    ) : null}
+                  </section>
+                )}
               </article>
             )}
           </section>

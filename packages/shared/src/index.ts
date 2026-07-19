@@ -12,12 +12,15 @@ export interface ConnectionPingAcknowledgement {
   receivedAt: string;
 }
 
-export type RoomStatus = "WAITING" | "COUNTDOWN" | "ACTIVE";
+export type RoomStatus = "WAITING" | "COUNTDOWN" | "ACTIVE" | "FINISHED";
+
+export type PlayerStatus = "LOBBY" | "SOLVING" | "SUBMITTED";
 
 export interface PublicPlayer {
   id: string;
   username: string;
   isHost: boolean;
+  status: PlayerStatus;
 }
 
 export interface PublicRoomState {
@@ -60,10 +63,50 @@ export interface RaceStartedPayload {
   endsAt: number;
 }
 
+export interface SubmitAnswerPayload {
+  roomCode: string;
+  explanation: string;
+  proposedFix: string;
+}
+
+export interface SubmissionEvaluation {
+  correct: boolean;
+  rootCauseScore: number;
+  fixScore: number;
+  reasoningScore: number;
+  finalScore: number;
+  feedback: string;
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  playerId: string;
+  username: string;
+  correct: boolean;
+  rootCauseScore: number;
+  fixScore: number;
+  reasoningScore: number;
+  finalScore: number;
+  submittedAt: number;
+}
+
+export interface FinalRaceResult {
+  roomCode: string;
+  challengeId: string;
+  finishedAt: number;
+  leaderboard: LeaderboardEntry[];
+  referenceAnswer: {
+    rootCause: string;
+    referenceFix: string;
+    requiredConcepts: string[];
+  };
+}
+
 export interface ServerToClientEvents {
   "connection:ready": (payload: ConnectionReadyPayload) => void;
   "room:state": (room: PublicRoomState) => void;
   "race:started": (payload: RaceStartedPayload) => void;
+  "race:finished": (result: FinalRaceResult) => void;
 }
 
 export interface ClientToServerEvents {
@@ -82,5 +125,14 @@ export interface ClientToServerEvents {
   "race:start": (
     payload: { roomCode: string },
     acknowledge: (response: AckResult<{ accepted: true }>) => void,
+  ) => void;
+  "race:submit": (
+    payload: SubmitAnswerPayload,
+    acknowledge: (
+      response: AckResult<{
+        submissionId: string;
+        evaluation: SubmissionEvaluation;
+      }>,
+    ) => void,
   ) => void;
 }

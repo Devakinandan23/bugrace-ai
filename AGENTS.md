@@ -5,17 +5,16 @@ developers race to identify, explain, and fix software bugs.
 
 ## Current milestone
 
-The current milestone is the multiplayer room and race-start vertical slice:
-guest room creation, joining from a second browser, shared lobby state,
-host-only race start, and delivery of one hard-coded challenge to every player.
+The current milestone is the server-authoritative submission, deterministic
+mock evaluation, scoring and final-results vertical slice.
 
 Do not implement:
 
-- answer submission
-- AI evaluation or model calls
-- scoring
+- OpenAI integration or model calls
+- submitted-code execution
+- automatic deadline completion
+- speed scoring
 - hints
-- leaderboards
 - multiple challenges or rounds
 - authentication
 - databases
@@ -35,6 +34,13 @@ unless explicitly requested.
 - Socket.IO event names and payload types must come from the shared package.
 - Never expose server secrets to the frontend.
 - Never call OpenAI directly from the browser.
+- Player submissions are private.
+- Never broadcast one player's explanation or proposed fix to another player.
+- Evaluation logic runs only on the backend.
+- Final score and ranking are calculated by application code.
+- A player may submit only once per race.
+- Never execute submitted code.
+- OpenAI integration is outside the current milestone.
 
 ## Engineering rules
 
@@ -53,7 +59,7 @@ unless explicitly requested.
 
 ## Current acceptance criteria
 
-The room and race-start milestone is complete only when:
+The submission and results milestone is complete only when:
 
 - one root command starts the frontend and backend;
 - the frontend connects to the Socket.IO backend;
@@ -65,6 +71,14 @@ The room and race-start milestone is complete only when:
 - only the host can start, and at least two connected players are required;
 - both guests receive the same public challenge and server timestamps;
 - room status transitions from `WAITING` to `COUNTDOWN` to `ACTIVE`;
+- each player can submit one validated explanation and proposed fix;
+- rapid duplicate submissions result in one stored submission;
+- the backend mock evaluator returns deterministic component scores;
+- application code calculates the final score and deterministic ranking;
+- other players see only public `SOLVING` or `SUBMITTED` status during the race;
+- the race becomes `FINISHED` when every connected player has submitted;
+- every player receives the same final leaderboard and reference solution;
+- submitted answers remain private before and after completion;
 - waiting-room disconnects update the lobby and transfer host ownership when needed;
 - the health endpoint works;
 - linting passes;

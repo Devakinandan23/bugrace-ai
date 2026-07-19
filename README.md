@@ -1,8 +1,8 @@
 # BugRace AI
 
 BugRace AI is intended to become a real-time multiplayer debugging game. The
-current vertical slice supports creating a room, joining from another browser,
-starting a race as the host and delivering one shared debugging challenge.
+current vertical slice supports creating a room, starting one shared challenge,
+submitting an answer, deterministic backend evaluation and final results.
 
 ## Currently implemented
 
@@ -15,15 +15,23 @@ starting a race as the host and delivering one shared debugging challenge.
 - Guest room creation and joining with a six-character room code
 - Server-authoritative lobby state, host ownership and disconnect cleanup
 - Host-only race start with shared server timestamps and one public challenge
+- One private explanation and proposed-fix submission per player
+- Deterministic backend-only mock evaluation and application-calculated scoring
+- Public submission statuses and a final deterministic leaderboard
+- Reference solution revealed only after every connected player submits
 
-Answer submission, scoring, AI evaluation, multiple rounds, authentication and
-persistence are not implemented.
+OpenAI evaluation, multiple rounds, authentication and persistence are not
+implemented. Submitted code is never executed; the temporary evaluator checks
+for a small deterministic set of phrases and is not semantically intelligent.
 
 Rooms are stored only in server memory. A disconnected guest is removed without
 reconnection recovery. Waiting-room host ownership transfers to the earliest
 remaining player; after a race starts, a disconnected host is simply removed
-and the race state is preserved. The provided `endsAt` timestamp is reserved for
-the next slice—automatic race completion is intentionally not implemented yet.
+and the race state is preserved. A completed submission is retained for the
+leaderboard if its player disconnects; an unsubmitted disconnected player is
+removed from the completion requirement. If a player remains connected without
+submitting, the race does not automatically finish at the deadline in this
+milestone. Deadline-driven completion is the next vertical slice.
 
 ## Prerequisites
 
@@ -96,3 +104,17 @@ To verify the multiplayer slice, create a room in one browser and join it from a
 second browser using a different username. Confirm both player lists update,
 that only the host can start, and that both browsers receive challenge
 `async-map-001` with identical start and end timestamps.
+
+For the submission flow:
+
+1. Wait for the room status to become `ACTIVE` in both browsers.
+2. In the first browser, explain that the async `map` returns an array of
+   promises and propose `Promise.all` as the fix.
+3. Submit and confirm the browser shows **Submission accepted** and its private
+   preliminary score.
+4. Confirm the second browser shows only the first player's `SUBMITTED` status,
+   without their answer, feedback or score.
+5. Submit from the second browser.
+6. Confirm both rooms become `FINISHED` and show the same leaderboard.
+7. Confirm the reference root cause, fix and required concepts appear only in
+   the finished results.

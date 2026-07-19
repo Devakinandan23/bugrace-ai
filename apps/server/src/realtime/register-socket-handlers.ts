@@ -11,9 +11,11 @@ import { publicChallenge } from "../game/challenge.js";
 import {
   activateRace,
   createRoom,
+  finishRaceIfReady,
   joinRoom,
   removePlayer,
   startRace,
+  submitAnswer,
 } from "../game/room-service.js";
 
 export interface SocketData {
@@ -49,6 +51,17 @@ function serverFailure<T>(): AckResult<T> {
       message: "The server could not complete that request.",
     },
   };
+}
+
+function finishRaceAndBroadcast(io: BugRaceServer, roomCode: string): void {
+  const completion = finishRaceIfReady(roomCode);
+
+  if (!completion) {
+    return;
+  }
+
+  io.to(roomCode).emit("room:state", completion.room);
+  io.to(roomCode).emit("race:finished", completion.result);
 }
 
 export function registerSocketHandlers(
@@ -164,6 +177,35 @@ export function registerSocketHandlers(
     activationTimer.unref();
   });
 
+  socket.on("race:submit", (payload, acknowledge) => {
+    const result = submitAnswer(
+      payload,
+      socket.data.playerId,
+      socket.data.roomCode,
+    );
+
+    if (!result.ok) {
+      if (result.error.code === "EVALUATION_FAILED") {
+        console.error(
+          `Submission evaluation failed in room ${socket.data.roomCode ?? "unknown"}`,
+        );
+      }
+
+      acknowledge(result);
+      return;
+    }
+
+    acknowledge({
+      ok: true,
+      data: {
+        submissionId: result.data.submissionId,
+        evaluation: result.data.evaluation,
+      },
+    });
+    io.to(result.data.room.code).emit("room:state", result.data.room);
+    finishRaceAndBroadcast(io, result.data.room.code);
+  });
+
   socket.on("disconnect", (reason) => {
     console.log(`Socket disconnected: ${socket.id} (${reason})`);
 
@@ -178,5 +220,7 @@ export function registerSocketHandlers(
     if (room) {
       io.to(room.code).emit("room:state", room);
     }
+
+    finishRaceAndBroadcast(io, roomCode);
   });
 }
