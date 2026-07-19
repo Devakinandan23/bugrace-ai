@@ -1,8 +1,8 @@
 # BugRace AI
 
-BugRace AI is intended to become a real-time multiplayer debugging game. This
-milestone implements only the repository foundation and a typed Socket.IO
-connection between a Next.js frontend and an Express backend.
+BugRace AI is intended to become a real-time multiplayer debugging game. The
+current vertical slice supports creating a room, joining from another browser,
+starting a race as the host and delivering one shared debugging challenge.
 
 ## Currently implemented
 
@@ -12,9 +12,18 @@ connection between a Next.js frontend and an Express backend.
 - Visible connection state, socket ID and acknowledged ping result
 - Zod-validated server environment configuration
 - Health endpoint and graceful server shutdown
+- Guest room creation and joining with a six-character room code
+- Server-authoritative lobby state, host ownership and disconnect cleanup
+- Host-only race start with shared server timestamps and one public challenge
 
-Rooms, races, challenges, scoring, AI, authentication and persistence are not
-implemented.
+Answer submission, scoring, AI evaluation, multiple rounds, authentication and
+persistence are not implemented.
+
+Rooms are stored only in server memory. A disconnected guest is removed without
+reconnection recovery. Waiting-room host ownership transfers to the earliest
+remaining player; after a race starts, a disconnected host is simply removed
+and the race state is preserved. The provided `endsAt` timestamp is reserved for
+the next slice—automatic race completion is intentionally not implemented yet.
 
 ## Prerequisites
 
@@ -61,9 +70,9 @@ pnpm format:check
 ```text
 apps/
   web/       Next.js frontend and singleton Socket.IO client
-  server/    Express, HTTP and Socket.IO backend
+  server/    Express, HTTP, Socket.IO and in-memory room state
 packages/
-  shared/    Browser/server real-time protocol contracts
+  shared/    Public browser/server real-time protocol contracts
 ```
 
 ## Manual verification
@@ -82,3 +91,8 @@ packages/
     socket IDs.
 11. Open `http://localhost:4000/health`.
 12. Confirm the endpoint returns `{"status":"ok","service":"bugrace-server"}`.
+
+To verify the multiplayer slice, create a room in one browser and join it from a
+second browser using a different username. Confirm both player lists update,
+that only the host can start, and that both browsers receive challenge
+`async-map-001` with identical start and end timestamps.

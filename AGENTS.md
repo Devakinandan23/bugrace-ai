@@ -5,15 +5,18 @@ developers race to identify, explain, and fix software bugs.
 
 ## Current milestone
 
-The current milestone is repository and real-time connection setup only.
+The current milestone is the multiplayer room and race-start vertical slice:
+guest room creation, joining from a second browser, shared lobby state,
+host-only race start, and delivery of one hard-coded challenge to every player.
 
 Do not implement:
 
-- rooms
-- players
-- races
-- debugging challenges
-- AI evaluation
+- answer submission
+- AI evaluation or model calls
+- scoring
+- hints
+- leaderboards
+- multiple challenges or rounds
 - authentication
 - databases
 - Redis
@@ -50,13 +53,19 @@ unless explicitly requested.
 
 ## Current acceptance criteria
 
-The setup milestone is complete only when:
+The room and race-start milestone is complete only when:
 
 - one root command starts the frontend and backend;
 - the frontend connects to the Socket.IO backend;
 - the frontend displays connection status and socket ID;
 - an acknowledged ping event works;
-- two independent browser sessions can connect;
+- a guest can create a room and becomes its host;
+- a second guest can join by room code;
+- both guests see the same automatically updated lobby state;
+- only the host can start, and at least two connected players are required;
+- both guests receive the same public challenge and server timestamps;
+- room status transitions from `WAITING` to `COUNTDOWN` to `ACTIVE`;
+- waiting-room disconnects update the lobby and transfer host ownership when needed;
 - the health endpoint works;
 - linting passes;
 - type checking passes;

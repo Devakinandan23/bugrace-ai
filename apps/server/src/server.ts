@@ -4,21 +4,31 @@ import type {
   ClientToServerEvents,
   ServerToClientEvents,
 } from "@bugrace/shared";
-import { Server } from "socket.io";
+import { type DefaultEventsMap, Server } from "socket.io";
 
 import { app } from "./app.js";
 import { env } from "./config/env.js";
-import { registerSocketHandlers } from "./realtime/register-socket-handlers.js";
+import {
+  registerSocketHandlers,
+  type SocketData,
+} from "./realtime/register-socket-handlers.js";
 
 const httpServer = createServer(app);
-const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
+const io = new Server<
+  ClientToServerEvents,
+  ServerToClientEvents,
+  DefaultEventsMap,
+  SocketData
+>(httpServer, {
   cors: {
     origin: env.WEB_ORIGIN,
     methods: ["GET", "POST"],
   },
 });
 
-io.on("connection", registerSocketHandlers);
+io.on("connection", (socket) => {
+  registerSocketHandlers(io, socket);
+});
 
 httpServer.listen(env.PORT, () => {
   console.log(`BugRace server listening on http://localhost:${env.PORT}`);
