@@ -20,6 +20,8 @@ const evaluationInput: EvaluationInput = {
     rootCause: "Async map returns an array of promises.",
     referenceFix: "Use Promise.all.",
     requiredConcepts: ["array of promises", "Promise.all"],
+    acceptedAlternatives: ["Await all mapped promises."],
+    invalidFixes: ["Await the array returned by map."],
   },
   submission: {
     explanation: "The async map returns an array of promises.",

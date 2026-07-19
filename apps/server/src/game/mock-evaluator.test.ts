@@ -15,6 +15,8 @@ const baseInput: Omit<EvaluationInput, "submission"> = {
     rootCause: "Async map returns promises.",
     referenceFix: "Use Promise.all.",
     requiredConcepts: ["array of promises", "Promise.all"],
+    acceptedAlternatives: ["Await all mapped promises."],
+    invalidFixes: ["Await the array returned by map."],
   },
 };
 

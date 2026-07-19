@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { createOpenAIClient } from "../openai-client.js";
 import { publicChallenge } from "./challenge.js";
 import { createSubmissionEvaluator } from "./evaluator-factory.js";
 import type { EvaluationInput } from "./evaluator.js";
@@ -61,7 +62,7 @@ const fixtures: Fixture[] = [
   },
 ];
 
-const evaluator = createSubmissionEvaluator(env);
+const evaluator = createSubmissionEvaluator(env, createOpenAIClient(env));
 const expectedSource = env.EVALUATOR_MODE === "openai" ? "OPENAI" : "MOCK";
 let failures = 0;
 
@@ -77,6 +78,8 @@ for (const fixture of fixtures) {
       rootCause: privateEvaluationData.rootCause,
       referenceFix: privateEvaluationData.referenceFix,
       requiredConcepts: [...privateEvaluationData.requiredConcepts],
+      acceptedAlternatives: [...privateEvaluationData.acceptedAlternatives],
+      invalidFixes: [...privateEvaluationData.invalidFixes],
     },
     submission: {
       explanation: fixture.explanation,

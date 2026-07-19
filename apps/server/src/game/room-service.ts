@@ -4,6 +4,7 @@ import type {
   AckResult,
   FinalRaceResult,
   PlayerStatus,
+  PublicChallenge,
   PublicRoomState,
   RaceFinishReason,
   RoomMembershipData,
@@ -15,10 +16,9 @@ import type {
 import { z } from "zod";
 
 import { env } from "../config/env.js";
-import { publicChallenge } from "./challenge.js";
+import { curatedChallenge, type StoredChallenge } from "./challenge-data.js";
 import { semanticEvaluationSchema } from "./evaluation-schema.js";
 import type { EvaluationInput, SemanticEvaluation } from "./evaluator.js";
-import { privateEvaluationData } from "./private-evaluation.js";
 import {
   calculateFinalScore,
   createZeroScore,
@@ -57,6 +57,7 @@ interface Room {
   hostPlayerId: string;
   players: Map<string, Player>;
   submissions: Map<string, Submission>;
+  challenge?: StoredChallenge;
   startsAt?: number;
   endsAt?: number;
   finishedAt?: number;
@@ -66,15 +67,25 @@ interface Room {
   updatedAt: number;
 }
 
-interface RaceStartData {
+export interface ReadyRaceStartData {
+  generationRequested: false;
   room: PublicRoomState;
+  challenge: PublicChallenge;
   startsAt: number;
   endsAt: number;
 }
 
+export interface GeneratedRacePreparationData {
+  generationRequested: true;
+  room: PublicRoomState;
+}
+
+export type RaceStartData = ReadyRaceStartData | GeneratedRacePreparationData;
+
 export interface SubmissionReservationData extends SubmissionAcceptedPayload {
   playerId: string;
   socketId: string;
+  challengeId: string;
   evaluationInput: EvaluationInput;
   room: PublicRoomState;
 }
@@ -139,6 +150,7 @@ const joinRoomPayloadSchema = z
 const startRacePayloadSchema = z
   .object({
     roomCode: roomCodeSchema,
+    generateChallenge: z.boolean().optional().default(false),
   })
   .strict();
 
@@ -337,6 +349,7 @@ export function startRace(
   payload: unknown,
   playerId: string | undefined,
   roomCode: string | undefined,
+  challengeGenerationEnabled = env.CHALLENGE_GENERATION_ENABLED,
 ): AckResult<RaceStartData> {
   const parsedPayload = startRacePayloadSchema.safeParse(payload);
 
@@ -382,23 +395,78 @@ export function startRace(
     );
   }
 
+  if (parsedPayload.data.generateChallenge && challengeGenerationEnabled) {
+    // Reserve generation synchronously so duplicate starts cannot call OpenAI.
+    room.status = "PREPARING";
+    room.updatedAt = Date.now();
+
+    return {
+      ok: true,
+      data: {
+        generationRequested: true,
+        room: toPublicRoomState(room),
+      },
+    };
+  }
+
+  const readyRace = beginCountdown(room, curatedChallenge);
+
+  return { ok: true, data: readyRace };
+}
+
+function storeChallenge(
+  room: Room,
+  challenge: StoredChallenge,
+): StoredChallenge {
+  const storedChallenge = deepFreeze({
+    public: { ...challenge.public },
+    private: {
+      rootCause: challenge.private.rootCause,
+      referenceFix: challenge.private.referenceFix,
+      requiredConcepts: [...challenge.private.requiredConcepts],
+      acceptedAlternatives: [...challenge.private.acceptedAlternatives],
+      invalidFixes: [...challenge.private.invalidFixes],
+    },
+  });
+
+  room.challenge = storedChallenge;
+  return storedChallenge;
+}
+
+function beginCountdown(
+  room: Room,
+  challenge: StoredChallenge,
+): ReadyRaceStartData {
+  const storedChallenge = storeChallenge(room, challenge);
+
   const startsAt = Date.now() + 3_000;
   const endsAt = startsAt + env.RACE_DURATION_MS;
 
-  // This mutation is intentionally synchronous to prevent double starts.
   room.status = "COUNTDOWN";
   room.startsAt = startsAt;
   room.endsAt = endsAt;
   room.updatedAt = Date.now();
 
   return {
-    ok: true,
-    data: {
-      room: toPublicRoomState(room),
-      startsAt,
-      endsAt,
-    },
+    generationRequested: false,
+    room: toPublicRoomState(room),
+    challenge: storedChallenge.public,
+    startsAt,
+    endsAt,
   };
+}
+
+export function completeRacePreparation(
+  roomCode: string,
+  challenge: StoredChallenge,
+): ReadyRaceStartData | null {
+  const room = rooms.get(roomCode);
+
+  if (!room || room.status !== "PREPARING") {
+    return null;
+  }
+
+  return beginCountdown(room, challenge);
 }
 
 export function activateRace(
@@ -480,6 +548,13 @@ export function reserveSubmission(
     return failure("RACE_NOT_STARTED", "The race has not started.");
   }
 
+  if (!room.challenge) {
+    return failure(
+      "CHALLENGE_UNAVAILABLE",
+      "The race challenge is unavailable.",
+    );
+  }
+
   if (receivedAt < room.startsAt) {
     return failure("RACE_NOT_STARTED", "The race has not started.");
   }
@@ -502,6 +577,7 @@ export function reserveSubmission(
     );
   }
 
+  const challenge = room.challenge;
   const submissionId = randomUUID();
   const submission: Submission = {
     id: submissionId,
@@ -510,7 +586,7 @@ export function reserveSubmission(
     username: player.username,
     isHost: player.id === room.hostPlayerId,
     roomCode: room.code,
-    challengeId: publicChallenge.id,
+    challengeId: challenge.public.id,
     explanation: parsedPayload.data.explanation,
     proposedFix: parsedPayload.data.proposedFix,
     acceptedAt: receivedAt,
@@ -529,17 +605,20 @@ export function reserveSubmission(
       status: "EVALUATING",
       playerId,
       socketId: player.socketId,
+      challengeId: challenge.public.id,
       evaluationInput: {
         challenge: {
-          title: publicChallenge.title,
-          scenario: publicChallenge.scenario,
-          language: publicChallenge.language,
-          buggyCode: publicChallenge.buggyCode,
+          title: challenge.public.title,
+          scenario: challenge.public.scenario,
+          language: challenge.public.language,
+          buggyCode: challenge.public.buggyCode,
         },
         rubric: {
-          rootCause: privateEvaluationData.rootCause,
-          referenceFix: privateEvaluationData.referenceFix,
-          requiredConcepts: [...privateEvaluationData.requiredConcepts],
+          rootCause: challenge.private.rootCause,
+          referenceFix: challenge.private.referenceFix,
+          requiredConcepts: [...challenge.private.requiredConcepts],
+          acceptedAlternatives: [...challenge.private.acceptedAlternatives],
+          invalidFixes: [...challenge.private.invalidFixes],
         },
         submission: {
           explanation: submission.explanation,
@@ -784,7 +863,8 @@ export function advanceRaceState(
   if (
     room.startsAt === undefined ||
     room.endsAt === undefined ||
-    !room.finishReason
+    !room.finishReason ||
+    !room.challenge
   ) {
     return null;
   }
@@ -792,6 +872,7 @@ export function advanceRaceState(
   const startsAt = room.startsAt;
   const endsAt = room.endsAt;
   const finishReason = room.finishReason;
+  const challenge = room.challenge;
 
   room.status = "FINISHED";
   room.finishedAt = now;
@@ -868,7 +949,7 @@ export function advanceRaceState(
 
   const result: FinalRaceResult = {
     roomCode: room.code,
-    challengeId: publicChallenge.id,
+    challengeId: challenge.public.id,
     startsAt,
     endsAt,
     finishedAt: now,
@@ -876,9 +957,9 @@ export function advanceRaceState(
     scoringRules: PUBLIC_SCORING_RULES,
     leaderboard,
     referenceAnswer: {
-      rootCause: privateEvaluationData.rootCause,
-      referenceFix: privateEvaluationData.referenceFix,
-      requiredConcepts: [...privateEvaluationData.requiredConcepts],
+      rootCause: challenge.private.rootCause,
+      referenceFix: challenge.private.referenceFix,
+      requiredConcepts: [...challenge.private.requiredConcepts],
     },
   };
 

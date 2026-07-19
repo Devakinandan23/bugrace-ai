@@ -2,22 +2,34 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { BugRaceServer } from "../realtime/register-socket-handlers.js";
+import type { StoredChallenge } from "./challenge-data.js";
 import type { SemanticEvaluation } from "./evaluator.js";
 import { advanceRace } from "./race-deadline.js";
 import {
   activateRace,
   advanceRaceState,
   completeSubmissionEvaluation,
+  completeRacePreparation,
   createRoom,
   joinRoom,
   reserveSubmission,
   startRace,
+  type RaceStartData,
+  type ReadyRaceStartData,
 } from "./room-service.js";
 import { mockSubmissionEvaluator } from "./mock-evaluator.js";
 
 function expectSuccess<T>(result: { ok: true; data: T } | { ok: false }): T {
   assert.equal(result.ok, true);
   return (result as { ok: true; data: T }).data;
+}
+
+function expectReadyStart(
+  result: { ok: true; data: RaceStartData } | { ok: false },
+): ReadyRaceStartData {
+  const data = expectSuccess(result);
+  assert.equal(data.generationRequested, false);
+  return data as ReadyRaceStartData;
 }
 
 function createActiveRace(hostName: string, guestName: string, suffix: string) {
@@ -31,7 +43,7 @@ function createActiveRace(hostName: string, guestName: string, suffix: string) {
       false,
     ),
   );
-  const started = expectSuccess(
+  const started = expectReadyStart(
     startRace({ roomCode: host.room.code }, host.playerId, host.room.code),
   );
 
@@ -64,6 +76,177 @@ function semanticEvaluation(
   };
 }
 
+function generatedChallenge(): StoredChallenge {
+  return {
+    public: {
+      id: "ai-room-test",
+      title: "Overlapping Balance Updates",
+      scenario:
+        "Two account adjustments overlap and one completed change disappears.",
+      language: "typescript",
+      topic: "CONCURRENCY",
+      difficulty: "MEDIUM",
+      buggyCode:
+        "const account = await read(id);\nawait write(id, account.balance + delta);",
+      source: "AI_GENERATED",
+    },
+    private: {
+      rootCause:
+        "The read-modify-write sequence races and can overwrite a concurrent update.",
+      referenceFix: "Use an atomic increment or a locked transaction.",
+      requiredConcepts: ["atomic update", "concurrent write"],
+      acceptedAlternatives: ["Use optimistic concurrency and retry conflicts."],
+      invalidFixes: ["Await the write twice."],
+    },
+  };
+}
+
+test("non-host AI generation request is rejected", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Generation Host" }, "generation-host", false),
+  );
+  const guest = expectSuccess(
+    joinRoom(
+      { username: "Generation Guest", roomCode: host.room.code },
+      "generation-guest",
+      false,
+    ),
+  );
+
+  const result = startRace(
+    { roomCode: host.room.code, generateChallenge: true },
+    guest.playerId,
+    host.room.code,
+    true,
+  );
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "HOST_ONLY");
+  }
+});
+
+test("disabled challenge generation preserves the curated start path", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Curated Host" }, "curated-host", false),
+  );
+  expectSuccess(
+    joinRoom(
+      { username: "Curated Guest", roomCode: host.room.code },
+      "curated-guest",
+      false,
+    ),
+  );
+
+  const started = expectReadyStart(
+    startRace(
+      { roomCode: host.room.code, generateChallenge: true },
+      host.playerId,
+      host.room.code,
+      false,
+    ),
+  );
+
+  assert.equal(started.challenge.source, "CURATED");
+  assert.equal(started.room.status, "COUNTDOWN");
+});
+
+test("duplicate start produces one AI generation reservation", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Single Generator" }, "single-generator", false),
+  );
+  expectSuccess(
+    joinRoom(
+      { username: "Generator Guest", roomCode: host.room.code },
+      "single-generator-guest",
+      false,
+    ),
+  );
+  const starts = [
+    startRace(
+      { roomCode: host.room.code, generateChallenge: true },
+      host.playerId,
+      host.room.code,
+      true,
+    ),
+    startRace(
+      { roomCode: host.room.code, generateChallenge: true },
+      host.playerId,
+      host.room.code,
+      true,
+    ),
+  ];
+  const generationRequests = starts.filter(
+    (result) => result.ok && result.data.generationRequested,
+  );
+
+  assert.equal(generationRequests.length, 1);
+  assert.equal(starts[0]?.ok, true);
+  assert.equal(starts[1]?.ok, false);
+});
+
+test("stored generated challenge stays public/private separated and drives evaluation", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Stored Host" }, "stored-host", false),
+  );
+  expectSuccess(
+    joinRoom(
+      { username: "Stored Guest", roomCode: host.room.code },
+      "stored-guest",
+      false,
+    ),
+  );
+  const preparation = expectSuccess(
+    startRace(
+      { roomCode: host.room.code, generateChallenge: true },
+      host.playerId,
+      host.room.code,
+      true,
+    ),
+  );
+  assert.equal(preparation.generationRequested, true);
+
+  const challenge = generatedChallenge();
+  const ready = completeRacePreparation(host.room.code, challenge);
+
+  assert.ok(ready);
+  assert.deepEqual(ready.challenge, challenge.public);
+  const publicPayload = JSON.stringify({
+    room: ready.room,
+    challenge: ready.challenge,
+    startsAt: ready.startsAt,
+    endsAt: ready.endsAt,
+  });
+  assert.equal(publicPayload.includes(challenge.private.rootCause), false);
+  assert.equal(publicPayload.includes(challenge.private.referenceFix), false);
+  assert.equal(publicPayload.includes("acceptedAlternatives"), false);
+  assert.equal(publicPayload.includes("invalidFixes"), false);
+
+  assert.ok(activateRace(host.room.code, ready.startsAt));
+  const reservation = expectSuccess(
+    reserveSubmission(
+      validPayload(host.room.code),
+      host.playerId,
+      host.room.code,
+      ready.startsAt,
+    ),
+  );
+
+  assert.equal(reservation.challengeId, challenge.public.id);
+  assert.equal(
+    reservation.evaluationInput.challenge.buggyCode,
+    challenge.public.buggyCode,
+  );
+  assert.equal(
+    reservation.evaluationInput.rubric.rootCause,
+    challenge.private.rootCause,
+  );
+  assert.deepEqual(
+    reservation.evaluationInput.rubric.acceptedAlternatives,
+    challenge.private.acceptedAlternatives,
+  );
+});
+
 test("deadline results rank submissions before alphabetical timeouts and stay immutable", async () => {
   const host = expectSuccess(
     createRoom({ username: "Zoe" }, "host-socket", false),
@@ -75,7 +258,7 @@ test("deadline results rank submissions before alphabetical timeouts and stay im
       false,
     ),
   );
-  const started = expectSuccess(
+  const started = expectReadyStart(
     startRace({ roomCode: host.room.code }, host.playerId, host.room.code),
   );
 
@@ -319,7 +502,7 @@ test("leaderboard ordering is deterministic across score and time ties", () => {
       ),
     ),
   ];
-  const started = expectSuccess(
+  const started = expectReadyStart(
     startRace({ roomCode: host.room.code }, host.playerId, host.room.code),
   );
   assert.ok(activateRace(host.room.code, started.startsAt));

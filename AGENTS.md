@@ -5,8 +5,9 @@ developers race to identify, explain, and fix software bugs.
 
 ## Current milestone
 
-The current milestone is end-to-end 100-point scoring and final results with
-asynchronous OpenAI or deterministic mock semantic evaluation.
+The current milestone is optional validated AI challenge generation followed by
+end-to-end 100-point scoring and final results with asynchronous OpenAI or
+deterministic mock semantic evaluation.
 
 Do not implement:
 
@@ -31,6 +32,12 @@ unless explicitly requested.
 - Socket.IO event names and payload types must come from the shared package.
 - Never expose server secrets to the frontend.
 - Never call OpenAI directly from the browser.
+- AI challenge generation is host-requested, backend-only and disabled by
+  default.
+- A generated challenge is stored once per room; only its public fields may be
+  sent before results.
+- Invalid or failed generation must fall back to the curated challenge without
+  making the race unplayable.
 - Player submissions are private.
 - Never broadcast one player's explanation or proposed fix to another player.
 - Evaluation logic runs only on the backend.
@@ -46,8 +53,8 @@ unless explicitly requested.
 - Clients may display a countdown but cannot finish a race.
 - A server timeout is only a wake-up mechanism; `endsAt` is the source of truth.
 - Submissions at or after `endsAt` must be rejected.
-- Race state transitions are `WAITING` → `COUNTDOWN` → `ACTIVE` →
-  `FINALIZING` → `FINISHED`.
+- Generated-race state transitions are `WAITING` → `PREPARING` → `COUNTDOWN` →
+  `ACTIVE` → `FINALIZING` → `FINISHED`; curated races skip `PREPARING`.
 - Accepted submissions become `EVALUATING`; finalization waits for their
   terminal evaluation before creating results.
 - Race finalization must be idempotent.
@@ -81,9 +88,14 @@ The scoring-and-evaluation milestone is complete only when:
 - a second guest can join by room code;
 - both guests see the same automatically updated lobby state;
 - only the host can start, and at least two connected players are required;
+- an enabled host-only AI generation request reserves `PREPARING` exactly once,
+  validates structured output and falls back to the curated challenge on any
+  generation failure;
+- every player receives the same stored public challenge, while its private
+  rubric remains backend-only until final results;
 - both guests receive the same public challenge and server timestamps;
-- room status transitions from `WAITING` to `COUNTDOWN` to `ACTIVE` to
-  `FINALIZING` to `FINISHED`;
+- generated room status transitions from `WAITING` to `PREPARING` to
+  `COUNTDOWN` to `ACTIVE` to `FINALIZING` to `FINISHED`;
 - the server owns absolute `startsAt` and `endsAt` timestamps and one deadline
   timer per active room;
 - the browser countdown is display-only and emits no timer events;

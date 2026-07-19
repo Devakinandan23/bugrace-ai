@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  ChallengeFallbackPayload,
   ConnectionPingAcknowledgement,
   FinalRaceResult,
   PublicRoomState,
@@ -58,6 +59,8 @@ export default function Home() {
     string | null
   >(null);
   const [finalResult, setFinalResult] = useState<FinalRaceResult | null>(null);
+  const [requestAiChallenge, setRequestAiChallenge] = useState(false);
+  const [challengeNotice, setChallengeNotice] = useState<string | null>(null);
   const [serverDeadlineRejected, setServerDeadlineRejected] = useState(false);
   const [serverClock, setServerClock] = useState(0);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(
@@ -125,6 +128,7 @@ export default function Home() {
       setOwnEvaluation(null);
       setAcceptedSubmissionId(null);
       setFinalResult(null);
+      setChallengeNotice(null);
       setServerDeadlineRejected(false);
       setSubmissionError(null);
       setServerClock(Date.now());
@@ -136,6 +140,10 @@ export default function Home() {
       setServerDeadlineRejected(result.finishReason === "DEADLINE_REACHED");
       setSubmissionError(null);
       setServerClock(Date.now());
+    };
+
+    const handleChallengeFallback = (payload: ChallengeFallbackPayload) => {
+      setChallengeNotice(payload.message);
     };
 
     const handleSubmissionEvaluated = (payload: SubmissionEvaluatedPayload) => {
@@ -163,6 +171,7 @@ export default function Home() {
     socket.on("connection:ready", handleConnectionReady);
     socket.on("room:state", handleRoomState);
     socket.on("race:started", handleRaceStarted);
+    socket.on("race:challenge-fallback", handleChallengeFallback);
     socket.on("submission:evaluated", handleSubmissionEvaluated);
     socket.on("submission:evaluation-failed", handleSubmissionEvaluationFailed);
     socket.on("race:finished", handleRaceFinished);
@@ -175,6 +184,7 @@ export default function Home() {
       socket.off("connection:ready", handleConnectionReady);
       socket.off("room:state", handleRoomState);
       socket.off("race:started", handleRaceStarted);
+      socket.off("race:challenge-fallback", handleChallengeFallback);
       socket.off("submission:evaluated", handleSubmissionEvaluated);
       socket.off(
         "submission:evaluation-failed",
@@ -365,21 +375,27 @@ export default function Home() {
       return;
     }
 
+    setChallengeNotice(null);
+
     const complete = beginAcknowledgedAction("start");
 
     if (!complete) {
       return;
     }
 
-    socket.emit("race:start", { roomCode: room.code }, (response) => {
-      if (!complete()) {
-        return;
-      }
+    socket.emit(
+      "race:start",
+      { roomCode: room.code, generateChallenge: requestAiChallenge },
+      (response) => {
+        if (!complete()) {
+          return;
+        }
 
-      if (!response.ok) {
-        setActionError(response.error.message);
-      }
-    });
+        if (!response.ok) {
+          setActionError(response.error.message);
+        }
+      },
+    );
   };
 
   const submitAnswer = (event: FormEvent<HTMLFormElement>) => {
@@ -620,6 +636,15 @@ export default function Home() {
           </p>
         ) : null}
 
+        {challengeNotice ? (
+          <p
+            role="status"
+            className="mt-6 rounded-xl border border-amber-900 bg-amber-950/50 px-4 py-3 text-sm text-amber-200"
+          >
+            {challengeNotice}
+          </p>
+        ) : null}
+
         {!room ? (
           <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 sm:p-8">
             <h2 className="text-2xl font-semibold">Enter the lobby</h2>
@@ -742,20 +767,46 @@ export default function Home() {
             {!race ? (
               <div className="mt-6">
                 {isHost ? (
-                  <button
-                    type="button"
-                    onClick={startRace}
-                    disabled={
-                      room.status !== "WAITING" ||
-                      connectionState !== "Connected" ||
-                      pendingAction !== null
-                    }
-                    className="w-full rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-                  >
-                    {pendingAction === "start"
-                      ? "Starting race…"
-                      : "Start race"}
-                  </button>
+                  <div>
+                    <label className="mb-4 flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={requestAiChallenge}
+                        onChange={(event) =>
+                          setRequestAiChallenge(event.target.checked)
+                        }
+                        disabled={
+                          room.status !== "WAITING" || pendingAction !== null
+                        }
+                        className="mt-0.5 h-4 w-4 accent-cyan-400"
+                      />
+                      <span>
+                        <span className="block font-medium text-slate-200">
+                          Generate this challenge with AI
+                        </span>
+                        <span className="mt-1 block text-slate-500">
+                          Requires server AI generation. Runtime failures use
+                          the curated challenge.
+                        </span>
+                      </span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={startRace}
+                      disabled={
+                        room.status !== "WAITING" ||
+                        connectionState !== "Connected" ||
+                        pendingAction !== null
+                      }
+                      className="w-full rounded-xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                    >
+                      {room.status === "PREPARING"
+                        ? "Generating challenge…"
+                        : pendingAction === "start"
+                          ? "Starting race…"
+                          : "Start race"}
+                    </button>
+                  </div>
                 ) : (
                   <p className="rounded-xl bg-slate-950 px-4 py-3 text-center text-slate-400">
                     Waiting for the host to start the race.
@@ -766,6 +817,9 @@ export default function Home() {
               <article className="mt-8 border-t border-slate-800 pt-8">
                 <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-400">
                   Challenge {race.challenge.id}
+                  {race.challenge.source === "AI_GENERATED"
+                    ? " · AI-generated"
+                    : " · Curated"}
                 </p>
                 <h2 className="mt-2 text-3xl font-bold">
                   {race.challenge.title}

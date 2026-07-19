@@ -7,7 +7,10 @@ import type {
 import type { DefaultEventsMap, Server, Socket } from "socket.io";
 import { z } from "zod";
 
-import { publicChallenge } from "../game/challenge.js";
+import {
+  generateChallengeOrFallback,
+  type ChallengeGenerator,
+} from "../game/challenge-generator.js";
 import {
   EvaluationError,
   type EvaluationFailureCode,
@@ -21,6 +24,7 @@ import {
 import {
   activateRace,
   completeSubmissionEvaluation,
+  completeRacePreparation,
   createRoom,
   failSubmissionEvaluation,
   joinRoom,
@@ -28,6 +32,7 @@ import {
   removePlayer,
   reserveSubmission,
   startRace,
+  type ReadyRaceStartData,
   type SubmissionReservationData,
 } from "../game/room-service.js";
 
@@ -55,6 +60,9 @@ const connectionPingPayloadSchema = z
     sentAt: z.iso.datetime(),
   })
   .strict();
+
+const challengeFallbackMessage =
+  "Generated challenge was unavailable. A curated challenge was selected.";
 
 function serverFailure<T>(): AckResult<T> {
   return {
@@ -101,13 +109,13 @@ async function evaluateReservedSubmission(
 
     if (!completion) {
       console.error(
-        `Evaluation discarded submission=${reservation.submissionId} challenge=${publicChallenge.id} category=invalid-state`,
+        `Evaluation discarded submission=${reservation.submissionId} challenge=${reservation.challengeId} category=invalid-state`,
       );
       return;
     }
 
     console.log(
-      `Evaluation completed submission=${completion.submissionId} challenge=${publicChallenge.id} source=${completion.evaluation.evaluation.source} durationMs=${completedAt - startedAt}`,
+      `Evaluation completed submission=${completion.submissionId} challenge=${reservation.challengeId} source=${completion.evaluation.evaluation.source} durationMs=${completedAt - startedAt}`,
     );
     io.to(completion.socketId).emit("submission:evaluated", {
       submissionId: completion.submissionId,
@@ -126,7 +134,7 @@ async function evaluateReservedSubmission(
     );
 
     console.error(
-      `Evaluation failed submission=${reservation.submissionId} challenge=${publicChallenge.id} category=${failureCode} durationMs=${failedAt - startedAt}`,
+      `Evaluation failed submission=${reservation.submissionId} challenge=${reservation.challengeId} category=${failureCode} durationMs=${failedAt - startedAt}`,
     );
 
     if (!failure) {
@@ -146,10 +154,67 @@ async function evaluateReservedSubmission(
   }
 }
 
+function broadcastReadyRace(
+  io: BugRaceServer,
+  readyRace: ReadyRaceStartData,
+): void {
+  const { room, challenge, startsAt, endsAt } = readyRace;
+
+  io.to(room.code).emit("room:state", room);
+  io.to(room.code).emit("race:started", {
+    room,
+    challenge,
+    startsAt,
+    endsAt,
+  });
+  scheduleRaceDeadline(io, room.code, endsAt);
+
+  const activationTimer = setTimeout(
+    () => {
+      const activeRoom = activateRace(room.code, startsAt);
+
+      if (activeRoom) {
+        io.to(room.code).emit("room:state", activeRoom);
+      }
+    },
+    Math.max(0, startsAt - Date.now()),
+  );
+
+  activationTimer.unref();
+}
+
+async function prepareGeneratedRace(
+  io: BugRaceServer,
+  generator: ChallengeGenerator,
+  roomCode: string,
+  hostSocketId: string,
+): Promise<void> {
+  const generationStartedAt = Date.now();
+  const resolution = await generateChallengeOrFallback(generator);
+  const readyRace = completeRacePreparation(roomCode, resolution.challenge);
+
+  if (!readyRace) {
+    return;
+  }
+
+  console.log(
+    `Challenge prepared room=${roomCode} challenge=${readyRace.challenge.id} source=${readyRace.challenge.source} durationMs=${Date.now() - generationStartedAt}`,
+  );
+
+  if (resolution.fallbackUsed) {
+    io.to(hostSocketId).emit("race:challenge-fallback", {
+      message: challengeFallbackMessage,
+    });
+  }
+
+  broadcastReadyRace(io, readyRace);
+}
+
 export function registerSocketHandlers(
   io: BugRaceServer,
   socket: BugRaceSocket,
   evaluator: SubmissionEvaluator,
+  challengeGenerator: ChallengeGenerator | null,
 ): void {
   console.log(`Socket connected: ${socket.id}`);
 
@@ -228,6 +293,7 @@ export function registerSocketHandlers(
       payload,
       socket.data.playerId,
       socket.data.roomCode,
+      challengeGenerator !== null,
     );
 
     if (!result.ok) {
@@ -235,30 +301,24 @@ export function registerSocketHandlers(
       return;
     }
 
-    const { room, startsAt, endsAt } = result.data;
-
-    io.to(room.code).emit("room:state", room);
-    io.to(room.code).emit("race:started", {
-      room,
-      challenge: publicChallenge,
-      startsAt,
-      endsAt,
-    });
     acknowledge({ ok: true, data: { accepted: true } });
-    scheduleRaceDeadline(io, room.code, endsAt);
 
-    const activationTimer = setTimeout(
-      () => {
-        const activeRoom = activateRace(room.code, startsAt);
+    if (result.data.generationRequested) {
+      io.to(result.data.room.code).emit("room:state", result.data.room);
 
-        if (activeRoom) {
-          io.to(room.code).emit("room:state", activeRoom);
-        }
-      },
-      Math.max(0, startsAt - Date.now()),
-    );
+      if (challengeGenerator) {
+        void prepareGeneratedRace(
+          io,
+          challengeGenerator,
+          result.data.room.code,
+          socket.id,
+        );
+      }
 
-    activationTimer.unref();
+      return;
+    }
+
+    broadcastReadyRace(io, result.data);
   });
 
   socket.on("race:submit", (payload, acknowledge) => {

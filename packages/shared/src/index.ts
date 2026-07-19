@@ -13,7 +13,7 @@ export interface ConnectionPingAcknowledgement {
 }
 
 export type RoomStatus =
-  "WAITING" | "COUNTDOWN" | "ACTIVE" | "FINALIZING" | "FINISHED";
+  "WAITING" | "PREPARING" | "COUNTDOWN" | "ACTIVE" | "FINALIZING" | "FINISHED";
 
 export type PlayerStatus =
   "LOBBY" | "SOLVING" | "EVALUATING" | "SUBMITTED" | "TIME_EXPIRED";
@@ -64,7 +64,14 @@ export interface PublicChallenge {
   title: string;
   scenario: string;
   language: "typescript";
+  topic: "ASYNC_JAVASCRIPT" | "AUTHORIZATION" | "CONCURRENCY";
+  difficulty: "EASY" | "MEDIUM" | "HARD";
   buggyCode: string;
+  source: "CURATED" | "AI_GENERATED";
+}
+
+export interface ChallengeFallbackPayload {
+  message: string;
 }
 
 export type AckResult<T> =
@@ -163,6 +170,7 @@ export interface ServerToClientEvents {
   "connection:ready": (payload: ConnectionReadyPayload) => void;
   "room:state": (room: PublicRoomState) => void;
   "race:started": (payload: RaceStartedPayload) => void;
+  "race:challenge-fallback": (payload: ChallengeFallbackPayload) => void;
   "submission:evaluated": (payload: SubmissionEvaluatedPayload) => void;
   "submission:evaluation-failed": (
     payload: SubmissionEvaluationFailedPayload,
@@ -184,7 +192,7 @@ export interface ClientToServerEvents {
     acknowledge: (response: AckResult<RoomMembershipData>) => void,
   ) => void;
   "race:start": (
-    payload: { roomCode: string },
+    payload: { roomCode: string; generateChallenge?: boolean },
     acknowledge: (response: AckResult<{ accepted: true }>) => void,
   ) => void;
   "race:submit": (

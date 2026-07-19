@@ -5,6 +5,8 @@ export const publicChallenge = {
   title: "The Array of Promises",
   scenario: "Load all users by their IDs.",
   language: "typescript",
+  topic: "ASYNC_JAVASCRIPT",
+  difficulty: "EASY",
   buggyCode: `
 async function getUsers(ids: number[]) {
   const users = ids.map(async (id) => {
@@ -14,4 +16,5 @@ async function getUsers(ids: number[]) {
   return users;
 }
   `.trim(),
+  source: "CURATED",
 } as const satisfies PublicChallenge;

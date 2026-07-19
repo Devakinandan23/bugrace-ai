@@ -26,6 +26,8 @@ export interface EvaluationInput {
     rootCause: string;
     referenceFix: string;
     requiredConcepts: string[];
+    acceptedAlternatives: string[];
+    invalidFixes: string[];
   };
   submission: {
     explanation: string;

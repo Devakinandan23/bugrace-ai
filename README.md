@@ -1,8 +1,9 @@
 # BugRace AI
 
 BugRace AI is a real-time multiplayer debugging game. The current vertical
-slice supports one shared challenge, asynchronous backend semantic evaluation,
-a server-owned 100-point score, and deterministic final results.
+slice supports one shared curated or host-requested AI challenge, asynchronous
+backend semantic evaluation, a server-owned 100-point score, and deterministic
+final results.
 
 ## Currently implemented
 
@@ -14,7 +15,12 @@ a server-owned 100-point score, and deterministic final results.
 - Health endpoint and graceful server shutdown
 - Guest room creation and joining with a six-character room code
 - Server-authoritative lobby state, host ownership and disconnect cleanup
-- Host-only race start with shared server timestamps and one public challenge
+- Host-only race start with shared server timestamps and one room-owned public
+  challenge
+- Optional backend OpenAI challenge generation with Zod Structured Outputs
+- Application validation for line count, dangerous patterns, answer disclosure,
+  duplicate concepts and recent duplicate challenges
+- Transparent curated fallback when generation fails
 - One private explanation and proposed-fix submission per player
 - Backend-only OpenAI Responses API evaluation with Zod Structured Outputs
 - Explicit OpenAI and deterministic mock evaluator modes
@@ -35,8 +41,8 @@ request uses `store: false`, has no tools, and receives no username, socket ID,
 room code or other player data. The deterministic mock evaluator checks a small
 known set of phrases and is not semantically intelligent.
 
-AI challenge generation, multiple rounds, authentication and persistence are
-not implemented. Submitted code is never executed.
+Multiple rounds, authentication and persistence are not implemented. Generated
+and submitted code is never executed.
 
 Rooms are stored only in server memory, so restarting the backend loses active
 rooms. A disconnected guest is removed without reconnection recovery.
@@ -87,6 +93,9 @@ pnpm install
 The server example defaults to deterministic local evaluation:
 
 ```text
+CHALLENGE_GENERATION_ENABLED=false
+CHALLENGE_GENERATION_MODEL=gpt-5.4-mini
+CHALLENGE_GENERATION_TIMEOUT_MS=15000
 EVALUATOR_MODE=mock
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5.6-terra
@@ -95,12 +104,21 @@ OPENAI_MAX_RETRIES=1
 OPENAI_FALLBACK_MODE=mock
 ```
 
-For OpenAI evaluation, set `EVALUATOR_MODE=openai` and place a valid key in
-`OPENAI_API_KEY` inside `apps/server/.env`. The key is required only in OpenAI
-mode and must never use a `NEXT_PUBLIC_` prefix. Timeouts accept 3,000–30,000 ms,
-retries accept 0–2, and fallback accepts `mock` or `none`. The SDK client is
-created once at startup, and each accepted answer makes at most one primary
-model evaluation call.
+For OpenAI evaluation, set `EVALUATOR_MODE=openai`. To let the host request an
+AI-generated challenge, also set `CHALLENGE_GENERATION_ENABLED=true`. Place a
+valid key in `OPENAI_API_KEY` inside `apps/server/.env`; it is required when
+either OpenAI evaluation or challenge generation is enabled and must never use
+a `NEXT_PUBLIC_` prefix. Generation defaults to model `gpt-5.4-mini` with a
+15-second timeout. Evaluation timeouts accept 3,000–30,000 ms, retries accept
+0–2, and evaluation fallback accepts `mock` or `none`.
+
+The backend creates one OpenAI SDK client at startup and shares it between
+challenge generation and answer evaluation. A checked host generation request
+moves the room to `PREPARING`, makes at most one Responses API call with
+`store: false` and no tools, validates the result, stores its public/private
+halves on the room, then starts the countdown. Any refusal, timeout, API error,
+invalid output, unsafe code or recent duplicate selects the curated challenge;
+only the host receives the fallback notice.
 
 ## Development
 
@@ -170,6 +188,16 @@ To verify the multiplayer slice, create a room in one browser and join it from a
 second browser using a different username. Confirm both player lists update,
 that only the host can start, and that both browsers receive challenge
 `async-map-001` with identical start and end timestamps.
+
+To verify AI challenge generation, set `CHALLENGE_GENERATION_ENABLED=true`,
+configure a valid OpenAI API key, and restart the backend. As host, check
+**Generate this challenge with AI** before starting. Confirm both browsers see
+`PREPARING`, then receive the same challenge labelled **AI-generated**. With an
+invalid key or unavailable model, confirm the host sees “Generated challenge
+was unavailable. A curated challenge was selected.” and both browsers receive
+the curated challenge instead. In either path, inspect `race:started` and
+confirm it contains no root cause, reference fix, required concepts, accepted
+alternatives or invalid fixes.
 
 For the submission flow:
 
