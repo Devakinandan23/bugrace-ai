@@ -1,0 +1,19 @@
+{
+  "name": "bugrace-ai",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "concurrently -n web,server \"pnpm --filter @bugrace/web dev\" \"pnpm --filter @bugrace/server dev\"",
+    "build": "pnpm --filter @bugrace/shared build && pnpm --filter @bugrace/server build && pnpm --filter @bugrace/web build",
+    "typecheck": "pnpm --filter @bugrace/shared typecheck && pnpm --filter @bugrace/server typecheck && pnpm --filter @bugrace/web typecheck",
+    "lint": "pnpm --recursive lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "postinstall": "pnpm --filter @bugrace/shared build"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3",
+    "prettier": "^3.9.5"
+  }
+}
