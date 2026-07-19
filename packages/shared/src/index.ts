@@ -12,9 +12,38 @@ export interface ConnectionPingAcknowledgement {
   receivedAt: string;
 }
 
-export type RoomStatus = "WAITING" | "COUNTDOWN" | "ACTIVE" | "FINISHED";
+export type RoomStatus =
+  "WAITING" | "COUNTDOWN" | "ACTIVE" | "FINALIZING" | "FINISHED";
 
-export type PlayerStatus = "LOBBY" | "SOLVING" | "SUBMITTED";
+export type PlayerStatus =
+  "LOBBY" | "SOLVING" | "EVALUATING" | "SUBMITTED" | "TIME_EXPIRED";
+
+export type RaceFinishReason = "ALL_SUBMITTED" | "DEADLINE_REACHED";
+
+export type ParticipantOutcome = "SUBMITTED" | "TIME_EXPIRED";
+
+export type EvaluationSource = "OPENAI" | "MOCK" | "MOCK_FALLBACK";
+
+export interface ScoreBreakdown {
+  rootCauseScore: number;
+  fixScore: number;
+  reasoningScore: number;
+  semanticSubtotal: number;
+  speedScore: number;
+  hintsUsed: number;
+  hintPenalty: number;
+  incorrectAnswerCapApplied: boolean;
+  finalScore: number;
+  maximumScore: 100;
+}
+
+export interface PublicEvaluation {
+  source: EvaluationSource;
+  confidence: number;
+  feedback: string;
+  detectedConcepts: string[];
+  missingConcepts: string[];
+}
 
 export interface PublicPlayer {
   id: string;
@@ -71,29 +100,57 @@ export interface SubmitAnswerPayload {
 
 export interface SubmissionEvaluation {
   correct: boolean;
-  rootCauseScore: number;
-  fixScore: number;
-  reasoningScore: number;
-  finalScore: number;
-  feedback: string;
+  score: ScoreBreakdown;
+  evaluation: PublicEvaluation;
+}
+
+export interface SubmissionAcceptedPayload {
+  submissionId: string;
+  acceptedAt: number;
+  status: "EVALUATING";
+}
+
+export interface SubmissionEvaluatedPayload extends SubmissionEvaluation {
+  submissionId: string;
+}
+
+export interface SubmissionEvaluationFailedPayload {
+  submissionId: string;
+  code:
+    | "EVALUATION_TIMEOUT"
+    | "EVALUATION_REFUSED"
+    | "EVALUATION_INVALID"
+    | "EVALUATION_UNAVAILABLE";
+  message: string;
+  retryAllowed: boolean;
 }
 
 export interface LeaderboardEntry {
   rank: number;
   playerId: string;
   username: string;
-  correct: boolean;
-  rootCauseScore: number;
-  fixScore: number;
-  reasoningScore: number;
-  finalScore: number;
-  submittedAt: number;
+  isHost: boolean;
+  outcome: ParticipantOutcome;
+  correct: boolean | null;
+  acceptedAt: number | null;
+  elapsedMs: number | null;
+  score: ScoreBreakdown;
+  evaluation: PublicEvaluation | null;
 }
 
 export interface FinalRaceResult {
   roomCode: string;
   challengeId: string;
+  startsAt: number;
+  endsAt: number;
   finishedAt: number;
+  finishReason: RaceFinishReason;
+  scoringRules: {
+    maximumScore: 100;
+    speedMaximum: 10;
+    incorrectAnswerCap: 40;
+    penaltyPerHint: 5;
+  };
   leaderboard: LeaderboardEntry[];
   referenceAnswer: {
     rootCause: string;
@@ -106,6 +163,10 @@ export interface ServerToClientEvents {
   "connection:ready": (payload: ConnectionReadyPayload) => void;
   "room:state": (room: PublicRoomState) => void;
   "race:started": (payload: RaceStartedPayload) => void;
+  "submission:evaluated": (payload: SubmissionEvaluatedPayload) => void;
+  "submission:evaluation-failed": (
+    payload: SubmissionEvaluationFailedPayload,
+  ) => void;
   "race:finished": (result: FinalRaceResult) => void;
 }
 
@@ -128,11 +189,6 @@ export interface ClientToServerEvents {
   ) => void;
   "race:submit": (
     payload: SubmitAnswerPayload,
-    acknowledge: (
-      response: AckResult<{
-        submissionId: string;
-        evaluation: SubmissionEvaluation;
-      }>,
-    ) => void,
+    acknowledge: (response: AckResult<SubmissionAcceptedPayload>) => void,
   ) => void;
 }

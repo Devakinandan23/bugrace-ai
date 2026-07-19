@@ -5,16 +5,26 @@ import type {
   FinalRaceResult,
   PlayerStatus,
   PublicRoomState,
+  RaceFinishReason,
   RoomMembershipData,
   RoomStatus,
+  ScoreBreakdown,
+  SubmissionAcceptedPayload,
   SubmissionEvaluation,
 } from "@bugrace/shared";
 import { z } from "zod";
 
+import { env } from "../config/env.js";
 import { publicChallenge } from "./challenge.js";
-import { mockSubmissionEvaluator } from "./mock-evaluator.js";
+import { semanticEvaluationSchema } from "./evaluation-schema.js";
+import type { EvaluationInput, SemanticEvaluation } from "./evaluator.js";
 import { privateEvaluationData } from "./private-evaluation.js";
-import { calculateFinalScore, clampScore } from "./scoring.js";
+import {
+  calculateFinalScore,
+  createZeroScore,
+  deriveCorrectness,
+  PUBLIC_SCORING_RULES,
+} from "./scoring.js";
 
 interface Player {
   id: string;
@@ -26,18 +36,19 @@ interface Player {
 interface Submission {
   id: string;
   playerId: string;
+  socketId: string;
   username: string;
+  isHost: boolean;
   roomCode: string;
   challengeId: string;
   explanation: string;
   proposedFix: string;
-  correct: boolean;
-  rootCauseScore: number;
-  fixScore: number;
-  reasoningScore: number;
-  finalScore: number;
-  feedback: string;
-  submittedAt: number;
+  acceptedAt: number;
+  evaluationStartedAt?: number;
+  evaluationCompletedAt?: number;
+  evaluation?: SemanticEvaluation;
+  correct?: boolean;
+  score?: ScoreBreakdown;
 }
 
 interface Room {
@@ -50,6 +61,7 @@ interface Room {
   endsAt?: number;
   finishedAt?: number;
   finalResult?: FinalRaceResult;
+  finishReason?: RaceFinishReason;
   createdAt: number;
   updatedAt: number;
 }
@@ -60,15 +72,39 @@ interface RaceStartData {
   endsAt: number;
 }
 
-interface SubmissionAcceptanceData {
+export interface SubmissionReservationData extends SubmissionAcceptedPayload {
+  playerId: string;
+  socketId: string;
+  evaluationInput: EvaluationInput;
+  room: PublicRoomState;
+}
+
+export interface SubmissionCompletionData {
+  playerId: string;
+  socketId: string;
   submissionId: string;
   evaluation: SubmissionEvaluation;
   room: PublicRoomState;
 }
 
-interface RaceCompletionData {
+export interface SubmissionFailureData {
+  playerId: string;
+  socketId: string;
+  submissionId: string;
+  retryAllowed: boolean;
   room: PublicRoomState;
-  result: FinalRaceResult;
+}
+
+export interface RaceAdvanceData {
+  room: PublicRoomState;
+  result: FinalRaceResult | null;
+  enteredFinalizing: boolean;
+  didFinish: boolean;
+}
+
+export interface RaceDeadlineState {
+  status: RoomStatus;
+  endsAt: number | undefined;
 }
 
 const roomCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -143,6 +179,19 @@ function failure<T>(code: string, message: string): AckResult<T> {
     ok: false,
     error: { code, message },
   };
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+
+  Object.freeze(value);
+  for (const nestedValue of Object.values(value as Record<string, unknown>)) {
+    deepFreeze(nestedValue);
+  }
+
+  return value;
 }
 
 function generateRoomCode(): string {
@@ -334,7 +383,7 @@ export function startRace(
   }
 
   const startsAt = Date.now() + 3_000;
-  const endsAt = startsAt + 120_000;
+  const endsAt = startsAt + env.RACE_DURATION_MS;
 
   // This mutation is intentionally synchronous to prevent double starts.
   room.status = "COUNTDOWN";
@@ -375,11 +424,12 @@ export function activateRace(
   return toPublicRoomState(room);
 }
 
-export function submitAnswer(
+export function reserveSubmission(
   payload: unknown,
   playerId: string | undefined,
   socketRoomCode: string | undefined,
-): AckResult<SubmissionAcceptanceData> {
+  receivedAt = Date.now(),
+): AckResult<SubmissionReservationData> {
   const parsedPayload = submissionPayloadSchema.safeParse(payload);
 
   if (!parsedPayload.success) {
@@ -415,6 +465,13 @@ export function submitAnswer(
     );
   }
 
+  if (
+    room.status === "FINISHED" &&
+    room.finalResult?.finishReason === "DEADLINE_REACHED"
+  ) {
+    return failure("RACE_ENDED", "The race deadline has passed.");
+  }
+
   if (room.status !== "ACTIVE") {
     return failure("RACE_NOT_ACTIVE", "The race is not active.");
   }
@@ -423,17 +480,12 @@ export function submitAnswer(
     return failure("RACE_NOT_STARTED", "The race has not started.");
   }
 
-  const submittedAt = Date.now();
-
-  if (submittedAt < room.startsAt) {
+  if (receivedAt < room.startsAt) {
     return failure("RACE_NOT_STARTED", "The race has not started.");
   }
 
-  if (submittedAt >= room.endsAt) {
-    return failure(
-      "SUBMISSION_TOO_LATE",
-      "The submission deadline has passed.",
-    );
+  if (receivedAt >= room.endsAt) {
+    return failure("RACE_ENDED", "The race deadline has passed.");
   }
 
   if (room.submissions.has(playerId)) {
@@ -454,126 +506,374 @@ export function submitAnswer(
   const submission: Submission = {
     id: submissionId,
     playerId,
+    socketId: player.socketId,
     username: player.username,
+    isHost: player.id === room.hostPlayerId,
     roomCode: room.code,
     challengeId: publicChallenge.id,
     explanation: parsedPayload.data.explanation,
     proposedFix: parsedPayload.data.proposedFix,
-    correct: false,
-    rootCauseScore: 0,
-    fixScore: 0,
-    reasoningScore: 0,
-    finalScore: 0,
-    feedback: "",
-    submittedAt,
+    acceptedAt: receivedAt,
   };
 
   // Reserve synchronously so rapid duplicate events cannot evaluate twice.
   room.submissions.set(playerId, submission);
+  player.status = "EVALUATING";
+  room.updatedAt = receivedAt;
 
-  try {
-    const evaluation = mockSubmissionEvaluator.evaluate({
-      explanation: submission.explanation,
-      proposedFix: submission.proposedFix,
-    });
-    const rootCauseScore = clampScore(evaluation.rootCauseScore, 35);
-    const fixScore = clampScore(evaluation.fixScore, 35);
-    const reasoningScore = clampScore(evaluation.reasoningScore, 15);
-    const finalScore = calculateFinalScore({
-      rootCauseScore,
-      fixScore,
-      reasoningScore,
-    });
-
-    Object.assign(submission, {
-      correct: evaluation.correct,
-      rootCauseScore,
-      fixScore,
-      reasoningScore,
-      finalScore,
-      feedback: evaluation.feedback,
-    });
-
-    player.status = "SUBMITTED";
-    room.updatedAt = Date.now();
-
-    return {
-      ok: true,
-      data: {
-        submissionId,
-        evaluation: {
-          correct: submission.correct,
-          rootCauseScore,
-          fixScore,
-          reasoningScore,
-          finalScore,
-          feedback: submission.feedback,
+  return {
+    ok: true,
+    data: {
+      submissionId,
+      acceptedAt: receivedAt,
+      status: "EVALUATING",
+      playerId,
+      socketId: player.socketId,
+      evaluationInput: {
+        challenge: {
+          title: publicChallenge.title,
+          scenario: publicChallenge.scenario,
+          language: publicChallenge.language,
+          buggyCode: publicChallenge.buggyCode,
         },
-        room: toPublicRoomState(room),
+        rubric: {
+          rootCause: privateEvaluationData.rootCause,
+          referenceFix: privateEvaluationData.referenceFix,
+          requiredConcepts: [...privateEvaluationData.requiredConcepts],
+        },
+        submission: {
+          explanation: submission.explanation,
+          proposedFix: submission.proposedFix,
+        },
       },
-    };
-  } catch {
-    room.submissions.delete(playerId);
-    return failure(
-      "EVALUATION_FAILED",
-      "The submission could not be evaluated. Please try again.",
-    );
-  }
+      room: toPublicRoomState(room),
+    },
+  };
 }
 
-export function finishRaceIfReady(roomCode: string): RaceCompletionData | null {
-  const room = rooms.get(roomCode);
+export function markSubmissionEvaluationStarted(
+  roomCode: string,
+  playerId: string,
+  submissionId: string,
+  startedAt = Date.now(),
+): boolean {
+  const submission = rooms.get(roomCode)?.submissions.get(playerId);
 
-  if (!room || room.status !== "ACTIVE") {
-    return null;
+  if (!submission || submission.id !== submissionId || submission.evaluation) {
+    return false;
   }
 
-  const connectedPlayers = [...room.players.values()];
+  submission.evaluationStartedAt = startedAt;
+  return true;
+}
+
+export function completeSubmissionEvaluation(
+  roomCode: string,
+  playerId: string,
+  submissionId: string,
+  untrustedEvaluation: SemanticEvaluation,
+  completedAt = Date.now(),
+): SubmissionCompletionData | null {
+  const room = rooms.get(roomCode);
+  const submission = room?.submissions.get(playerId);
 
   if (
-    connectedPlayers.length === 0 ||
-    !connectedPlayers.every((player) => player.status === "SUBMITTED")
+    !room ||
+    !submission ||
+    submission.id !== submissionId ||
+    submission.evaluation
   ) {
     return null;
   }
 
-  const finishedAt = Date.now();
-  room.status = "FINISHED";
-  room.finishedAt = finishedAt;
-  room.updatedAt = finishedAt;
+  const parsedEvaluation =
+    semanticEvaluationSchema.safeParse(untrustedEvaluation);
 
-  const leaderboard = [...room.submissions.values()]
+  if (!parsedEvaluation.success) {
+    return null;
+  }
+
+  const evaluation: SemanticEvaluation = parsedEvaluation.data;
+  const correct = deriveCorrectness(evaluation);
+  const score = calculateFinalScore({
+    correct,
+    rootCauseScore: evaluation.rootCauseScore,
+    fixScore: evaluation.fixScore,
+    reasoningScore: evaluation.reasoningScore,
+    acceptedAt: submission.acceptedAt,
+    startsAt: room.startsAt ?? submission.acceptedAt,
+    endsAt: room.endsAt ?? submission.acceptedAt,
+    hintsUsed: 0,
+  });
+
+  Object.assign(submission, {
+    evaluation,
+    correct,
+    score,
+    evaluationCompletedAt: completedAt,
+  });
+
+  const player = room.players.get(playerId);
+  if (player?.status === "EVALUATING") {
+    player.status = "SUBMITTED";
+  }
+  room.updatedAt = completedAt;
+
+  return {
+    playerId,
+    socketId: submission.socketId,
+    submissionId,
+    evaluation: {
+      correct,
+      score,
+      evaluation: {
+        source: evaluation.source,
+        confidence: evaluation.confidence,
+        feedback: evaluation.feedback,
+        detectedConcepts: [...evaluation.detectedConcepts],
+        missingConcepts: [...evaluation.missingConcepts],
+      },
+    },
+    room: toPublicRoomState(room),
+  };
+}
+
+export function failSubmissionEvaluation(
+  roomCode: string,
+  playerId: string,
+  submissionId: string,
+  failedAt = Date.now(),
+): SubmissionFailureData | null {
+  const room = rooms.get(roomCode);
+  const submission = room?.submissions.get(playerId);
+
+  if (!room || !submission || submission.id !== submissionId) {
+    return null;
+  }
+
+  const player = room.players.get(playerId);
+  const retryAllowed =
+    room.status === "ACTIVE" &&
+    room.endsAt !== undefined &&
+    failedAt < room.endsAt &&
+    player?.status === "EVALUATING";
+
+  if (retryAllowed && player) {
+    room.submissions.delete(playerId);
+    player.status = "SOLVING";
+    room.updatedAt = failedAt;
+  }
+
+  return {
+    playerId,
+    socketId: submission.socketId,
+    submissionId,
+    retryAllowed,
+    room: toPublicRoomState(room),
+  };
+}
+
+function decideRaceClosure(room: Room, now: number): RaceFinishReason | null {
+  if (room.status !== "ACTIVE" || room.endsAt === undefined) {
+    return null;
+  }
+
+  const eligiblePlayers = [...room.players.values()];
+
+  if (eligiblePlayers.length === 0) {
+    return null;
+  }
+
+  if (
+    eligiblePlayers.every(
+      (player) =>
+        player.status === "EVALUATING" || player.status === "SUBMITTED",
+    )
+  ) {
+    return "ALL_SUBMITTED";
+  }
+
+  return now >= room.endsAt ? "DEADLINE_REACHED" : null;
+}
+
+export function getRaceDeadlineState(
+  roomCode: string,
+): RaceDeadlineState | null {
+  const room = rooms.get(roomCode);
+
+  return room ? { status: room.status, endsAt: room.endsAt } : null;
+}
+
+function canFinalizeResults(room: Room): boolean {
+  if (room.status !== "FINALIZING" || room.players.size === 0) {
+    return false;
+  }
+
+  const playersAreTerminal = [...room.players.values()].every(
+    (player) =>
+      player.status === "SUBMITTED" || player.status === "TIME_EXPIRED",
+  );
+  const submissionsAreTerminal = [...room.submissions.values()].every(
+    (submission) =>
+      submission.evaluation !== undefined &&
+      submission.correct !== undefined &&
+      submission.score !== undefined,
+  );
+
+  return playersAreTerminal && submissionsAreTerminal;
+}
+
+export function advanceRaceState(
+  roomCode: string,
+  now = Date.now(),
+): RaceAdvanceData | null {
+  const room = rooms.get(roomCode);
+
+  if (!room) {
+    return null;
+  }
+
+  if (room.status === "FINISHED") {
+    return room.finalResult
+      ? {
+          room: toPublicRoomState(room),
+          result: room.finalResult,
+          enteredFinalizing: false,
+          didFinish: false,
+        }
+      : null;
+  }
+
+  let enteredFinalizing = false;
+
+  if (room.status === "ACTIVE") {
+    const finishReason = decideRaceClosure(room, now);
+
+    if (!finishReason) {
+      return {
+        room: toPublicRoomState(room),
+        result: null,
+        enteredFinalizing: false,
+        didFinish: false,
+      };
+    }
+
+    room.status = "FINALIZING";
+    room.finishReason = finishReason;
+    room.updatedAt = now;
+    enteredFinalizing = true;
+
+    if (finishReason === "DEADLINE_REACHED") {
+      for (const player of room.players.values()) {
+        if (player.status === "SOLVING") {
+          player.status = "TIME_EXPIRED";
+        }
+      }
+    }
+  }
+
+  if (!canFinalizeResults(room)) {
+    return {
+      room: toPublicRoomState(room),
+      result: null,
+      enteredFinalizing,
+      didFinish: false,
+    };
+  }
+
+  if (
+    room.startsAt === undefined ||
+    room.endsAt === undefined ||
+    !room.finishReason
+  ) {
+    return null;
+  }
+
+  const startsAt = room.startsAt;
+  const endsAt = room.endsAt;
+  const finishReason = room.finishReason;
+
+  room.status = "FINISHED";
+  room.finishedAt = now;
+  room.updatedAt = now;
+
+  const submittedEntries = [...room.submissions.values()]
     .sort((first, second) => {
       if (first.correct !== second.correct) {
-        return Number(second.correct) - Number(first.correct);
+        return Number(second.correct ?? false) - Number(first.correct ?? false);
       }
 
-      if (first.finalScore !== second.finalScore) {
-        return second.finalScore - first.finalScore;
+      if (first.score?.finalScore !== second.score?.finalScore) {
+        return (second.score?.finalScore ?? 0) - (first.score?.finalScore ?? 0);
       }
 
-      if (first.submittedAt !== second.submittedAt) {
-        return first.submittedAt - second.submittedAt;
+      if (first.score?.semanticSubtotal !== second.score?.semanticSubtotal) {
+        return (
+          (second.score?.semanticSubtotal ?? 0) -
+          (first.score?.semanticSubtotal ?? 0)
+        );
       }
 
-      return first.username.localeCompare(second.username);
+      if (first.acceptedAt !== second.acceptedAt) {
+        return first.acceptedAt - second.acceptedAt;
+      }
+
+      const usernameComparison = first.username.localeCompare(second.username);
+
+      return usernameComparison !== 0
+        ? usernameComparison
+        : first.playerId.localeCompare(second.playerId);
     })
-    .map((submission, index) => ({
-      rank: index + 1,
+    .map((submission) => ({
       playerId: submission.playerId,
       username: submission.username,
-      correct: submission.correct,
-      rootCauseScore: submission.rootCauseScore,
-      fixScore: submission.fixScore,
-      reasoningScore: submission.reasoningScore,
-      finalScore: submission.finalScore,
-      submittedAt: submission.submittedAt,
+      isHost: submission.isHost,
+      outcome: "SUBMITTED" as const,
+      correct: submission.correct ?? false,
+      acceptedAt: submission.acceptedAt,
+      elapsedMs: Math.max(0, submission.acceptedAt - startsAt),
+      score: submission.score ?? createZeroScore(),
+      evaluation: submission.evaluation
+        ? {
+            source: submission.evaluation.source,
+            confidence: submission.evaluation.confidence,
+            feedback: submission.evaluation.feedback,
+            detectedConcepts: [...submission.evaluation.detectedConcepts],
+            missingConcepts: [...submission.evaluation.missingConcepts],
+          }
+        : null,
     }));
+
+  const timedOutEntries = [...room.players.values()]
+    .filter((player) => player.status === "TIME_EXPIRED")
+    .sort((first, second) => first.username.localeCompare(second.username))
+    .map((player) => ({
+      playerId: player.id,
+      username: player.username,
+      isHost: player.id === room.hostPlayerId,
+      outcome: "TIME_EXPIRED" as const,
+      correct: null,
+      acceptedAt: null,
+      elapsedMs: null,
+      score: createZeroScore(),
+      evaluation: null,
+    }));
+
+  const leaderboard = [...submittedEntries, ...timedOutEntries].map(
+    (entry, index) => ({
+      rank: index + 1,
+      ...entry,
+    }),
+  );
 
   const result: FinalRaceResult = {
     roomCode: room.code,
     challengeId: publicChallenge.id,
-    finishedAt,
+    startsAt,
+    endsAt,
+    finishedAt: now,
+    finishReason,
+    scoringRules: PUBLIC_SCORING_RULES,
     leaderboard,
     referenceAnswer: {
       rootCause: privateEvaluationData.rootCause,
@@ -582,11 +882,13 @@ export function finishRaceIfReady(roomCode: string): RaceCompletionData | null {
     },
   };
 
-  room.finalResult = result;
+  room.finalResult = deepFreeze(result);
 
   return {
     room: toPublicRoomState(room),
-    result,
+    result: room.finalResult,
+    enteredFinalizing,
+    didFinish: true,
   };
 }
 

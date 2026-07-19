@@ -5,15 +5,12 @@ developers race to identify, explain, and fix software bugs.
 
 ## Current milestone
 
-The current milestone is the server-authoritative submission, deterministic
-mock evaluation, scoring and final-results vertical slice.
+The current milestone is end-to-end 100-point scoring and final results with
+asynchronous OpenAI or deterministic mock semantic evaluation.
 
 Do not implement:
 
-- OpenAI integration or model calls
 - submitted-code execution
-- automatic deadline completion
-- speed scoring
 - hints
 - multiple challenges or rounds
 - authentication
@@ -40,7 +37,22 @@ unless explicitly requested.
 - Final score and ranking are calculated by application code.
 - A player may submit only once per race.
 - Never execute submitted code.
-- OpenAI integration is outside the current milestone.
+- The semantic evaluator scores only root cause, fix quality and reasoning.
+- Application code alone derives correctness, speed, penalties, final score,
+  race outcome and rank.
+- OpenAI calls use Structured Outputs, send no player identity, and set
+  `store: false`.
+- The backend owns the authoritative race deadline.
+- Clients may display a countdown but cannot finish a race.
+- A server timeout is only a wake-up mechanism; `endsAt` is the source of truth.
+- Submissions at or after `endsAt` must be rejected.
+- Race state transitions are `WAITING` → `COUNTDOWN` → `ACTIVE` →
+  `FINALIZING` → `FINISHED`.
+- Accepted submissions become `EVALUATING`; finalization waits for their
+  terminal evaluation before creating results.
+- Race finalization must be idempotent.
+- `race:finished` must be emitted at most once per race.
+- Server deadline timers must be cleared when rooms finish or are deleted.
 
 ## Engineering rules
 
@@ -59,7 +71,7 @@ unless explicitly requested.
 
 ## Current acceptance criteria
 
-The submission and results milestone is complete only when:
+The scoring-and-evaluation milestone is complete only when:
 
 - one root command starts the frontend and backend;
 - the frontend connects to the Socket.IO backend;
@@ -70,13 +82,31 @@ The submission and results milestone is complete only when:
 - both guests see the same automatically updated lobby state;
 - only the host can start, and at least two connected players are required;
 - both guests receive the same public challenge and server timestamps;
-- room status transitions from `WAITING` to `COUNTDOWN` to `ACTIVE`;
+- room status transitions from `WAITING` to `COUNTDOWN` to `ACTIVE` to
+  `FINALIZING` to `FINISHED`;
+- the server owns absolute `startsAt` and `endsAt` timestamps and one deadline
+  timer per active room;
+- the browser countdown is display-only and emits no timer events;
 - each player can submit one validated explanation and proposed fix;
 - rapid duplicate submissions result in one stored submission;
-- the backend mock evaluator returns deterministic component scores;
-- application code calculates the final score and deterministic ranking;
-- other players see only public `SOLVING` or `SUBMITTED` status during the race;
-- the race becomes `FINISHED` when every connected player has submitted;
+- one startup-selected backend evaluator returns only semantic component scores;
+- OpenAI mode uses the Responses API, Structured Outputs and bounded SDK
+  timeout/retries; mock mode remains deterministic;
+- OpenAI failure uses the configured transparent fallback and never silently
+  marks infrastructure failure as an incorrect answer;
+- application code calculates correctness, speed, the 100-point final score and
+  deterministic ranking;
+- other players see only public `SOLVING`, `EVALUATING` or `SUBMITTED` status
+  during the race;
+- submission acknowledgement confirms reservation before async evaluation
+  completes, and evaluation details are sent only to the submitting socket;
+- the race enters `FINALIZING` when every connected player reserves an answer
+  or the server deadline is reached, then becomes `FINISHED` after accepted
+  evaluations complete;
+- submissions at or after `endsAt` are rejected;
+- connected non-submitters become `TIME_EXPIRED` with zero points;
+- race finalization and `race:finished` emission are idempotent;
+- deadline timers are cleared on completion, room deletion and shutdown;
 - every player receives the same final leaderboard and reference solution;
 - submitted answers remain private before and after completion;
 - waiting-room disconnects update the lobby and transfer host ownership when needed;

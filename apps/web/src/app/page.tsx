@@ -5,12 +5,16 @@ import type {
   FinalRaceResult,
   PublicRoomState,
   RaceStartedPayload,
+  SubmissionEvaluatedPayload,
+  SubmissionEvaluationFailedPayload,
   SubmissionEvaluation,
 } from "@bugrace/shared";
 import type { FormEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 
 import { socket } from "@/lib/socket";
+
+import { RaceResults } from "./race-results";
 
 type ConnectionState =
   "Connecting" | "Connected" | "Disconnected" | "Connection error";
@@ -50,7 +54,11 @@ export default function Home() {
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [ownEvaluation, setOwnEvaluation] =
     useState<SubmissionEvaluation | null>(null);
+  const [acceptedSubmissionId, setAcceptedSubmissionId] = useState<
+    string | null
+  >(null);
   const [finalResult, setFinalResult] = useState<FinalRaceResult | null>(null);
+  const [serverDeadlineRejected, setServerDeadlineRejected] = useState(false);
   const [serverClock, setServerClock] = useState(0);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(
     null,
@@ -88,7 +96,9 @@ export default function Home() {
       setRoom(null);
       setRace(null);
       setOwnEvaluation(null);
+      setAcceptedSubmissionId(null);
       setFinalResult(null);
+      setServerDeadlineRejected(false);
       setSubmissionError(null);
       setActionError("Socket disconnected. Reconnect before joining a room.");
     };
@@ -113,7 +123,9 @@ export default function Home() {
       setExplanation("");
       setProposedFix("");
       setOwnEvaluation(null);
+      setAcceptedSubmissionId(null);
       setFinalResult(null);
+      setServerDeadlineRejected(false);
       setSubmissionError(null);
       setServerClock(Date.now());
       setActionError(null);
@@ -121,8 +133,28 @@ export default function Home() {
 
     const handleRaceFinished = (result: FinalRaceResult) => {
       setFinalResult(result);
+      setServerDeadlineRejected(result.finishReason === "DEADLINE_REACHED");
       setSubmissionError(null);
       setServerClock(Date.now());
+    };
+
+    const handleSubmissionEvaluated = (payload: SubmissionEvaluatedPayload) => {
+      setAcceptedSubmissionId(payload.submissionId);
+      setOwnEvaluation({
+        correct: payload.correct,
+        score: payload.score,
+        evaluation: payload.evaluation,
+      });
+      setSubmissionError(null);
+    };
+
+    const handleSubmissionEvaluationFailed = (
+      payload: SubmissionEvaluationFailedPayload,
+    ) => {
+      setAcceptedSubmissionId(
+        payload.retryAllowed ? null : payload.submissionId,
+      );
+      setSubmissionError(payload.message);
     };
 
     socket.on("connect", handleConnect);
@@ -131,6 +163,8 @@ export default function Home() {
     socket.on("connection:ready", handleConnectionReady);
     socket.on("room:state", handleRoomState);
     socket.on("race:started", handleRaceStarted);
+    socket.on("submission:evaluated", handleSubmissionEvaluated);
+    socket.on("submission:evaluation-failed", handleSubmissionEvaluationFailed);
     socket.on("race:finished", handleRaceFinished);
     socket.connect();
 
@@ -141,6 +175,11 @@ export default function Home() {
       socket.off("connection:ready", handleConnectionReady);
       socket.off("room:state", handleRoomState);
       socket.off("race:started", handleRaceStarted);
+      socket.off("submission:evaluated", handleSubmissionEvaluated);
+      socket.off(
+        "submission:evaluation-failed",
+        handleSubmissionEvaluationFailed,
+      );
       socket.off("race:finished", handleRaceFinished);
       socket.disconnect();
       activeRequestId.current += 1;
@@ -384,13 +423,19 @@ export default function Home() {
         }
 
         if (!response.ok) {
+          if (response.error.code === "RACE_ENDED") {
+            setServerDeadlineRejected(true);
+            setSubmissionError("The server deadline has passed.");
+            return;
+          }
+
           setSubmissionError(response.error.message);
           return;
         }
 
         setExplanation(normalizedExplanation);
         setProposedFix(normalizedProposedFix);
-        setOwnEvaluation(response.data.evaluation);
+        setAcceptedSubmissionId(response.data.submissionId);
         setSubmissionError(null);
       },
     );
@@ -460,8 +505,13 @@ export default function Home() {
   const isHost = room !== null && room.hostPlayerId === playerId;
   const currentPlayer = room?.players.find((player) => player.id === playerId);
   const hasSubmitted = currentPlayer?.status === "SUBMITTED";
+  const isEvaluating =
+    currentPlayer?.status === "EVALUATING" ||
+    (acceptedSubmissionId !== null && ownEvaluation === null);
+  const hasTimedOut = currentPlayer?.status === "TIME_EXPIRED";
   const deadlinePassed =
     race !== null && serverClock > 0 && serverClock >= race.endsAt;
+  const deadlineReached = deadlinePassed || serverDeadlineRejected;
   const submissionFieldsValid =
     explanation.trim().length >= 10 &&
     explanation.length <= 2_000 &&
@@ -471,9 +521,11 @@ export default function Home() {
     connectionState === "Connected" &&
     room?.status === "ACTIVE" &&
     serverClock > 0 &&
-    !deadlinePassed &&
+    !deadlineReached &&
     pendingAction === null &&
     !hasSubmitted &&
+    !isEvaluating &&
+    !hasTimedOut &&
     ownEvaluation === null &&
     submissionFieldsValid;
   const timerLabel =
@@ -482,8 +534,12 @@ export default function Home() {
       : room?.status === "COUNTDOWN"
         ? `Starts in ${Math.max(0, Math.ceil((race.startsAt - serverClock) / 1_000))}s`
         : room?.status === "ACTIVE"
-          ? `${Math.max(0, Math.ceil((race.endsAt - serverClock) / 1_000))}s remaining`
-          : "Race finished";
+          ? deadlineReached
+            ? "Time expired"
+            : `${Math.max(0, Math.ceil((race.endsAt - serverClock) / 1_000))}s remaining`
+          : room?.status === "FINALIZING"
+            ? "Finalizing evaluations…"
+            : "Race finished";
 
   return (
     <main className="min-h-screen bg-slate-950 px-6 py-12 text-slate-100">
@@ -755,104 +811,11 @@ export default function Home() {
                 </div>
 
                 {finalResult ? (
-                  <section className="mt-8 border-t border-slate-800 pt-8">
-                    <p className="text-sm font-semibold uppercase tracking-[0.2em] text-emerald-300">
-                      Race finished
-                    </p>
-                    <h3 className="mt-2 text-2xl font-bold">
-                      Final leaderboard
-                    </h3>
-                    <p className="mt-2 text-sm text-slate-400">
-                      Finished at{" "}
-                      {new Date(finalResult.finishedAt).toISOString()}
-                    </p>
-
-                    <div className="mt-5 overflow-x-auto">
-                      <table className="w-full min-w-[720px] border-collapse text-left text-sm">
-                        <thead className="text-slate-400">
-                          <tr className="border-b border-slate-700">
-                            <th className="px-3 py-3">Rank</th>
-                            <th className="px-3 py-3">Player</th>
-                            <th className="px-3 py-3">Result</th>
-                            <th className="px-3 py-3">Root cause</th>
-                            <th className="px-3 py-3">Fix</th>
-                            <th className="px-3 py-3">Reasoning</th>
-                            <th className="px-3 py-3">Final</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {finalResult.leaderboard.map((entry) => (
-                            <tr
-                              key={entry.playerId}
-                              className={`border-b border-slate-800 ${
-                                entry.playerId === playerId
-                                  ? "bg-cyan-950/50"
-                                  : ""
-                              }`}
-                            >
-                              <td className="px-3 py-4 font-semibold">
-                                #{entry.rank}
-                              </td>
-                              <td className="px-3 py-4">
-                                {entry.username}
-                                {entry.playerId === playerId ? " · You" : ""}
-                              </td>
-                              <td className="px-3 py-4">
-                                {entry.correct ? "Correct" : "Incorrect"}
-                              </td>
-                              <td className="px-3 py-4">
-                                {entry.rootCauseScore} / 35
-                              </td>
-                              <td className="px-3 py-4">
-                                {entry.fixScore} / 35
-                              </td>
-                              <td className="px-3 py-4">
-                                {entry.reasoningScore} / 15
-                              </td>
-                              <td className="px-3 py-4 font-semibold text-cyan-300">
-                                {entry.finalScore} / 85
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    <div className="mt-8 rounded-xl border border-slate-700 bg-slate-950 p-5">
-                      <h3 className="text-xl font-semibold">
-                        Reference solution
-                      </h3>
-                      <dl className="mt-4 space-y-4 text-sm">
-                        <div>
-                          <dt className="text-slate-500">Root cause</dt>
-                          <dd className="mt-1 text-slate-200">
-                            {finalResult.referenceAnswer.rootCause}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-slate-500">Reference fix</dt>
-                          <dd className="mt-1 font-mono text-slate-200">
-                            {finalResult.referenceAnswer.referenceFix}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-slate-500">Required concepts</dt>
-                          <dd className="mt-2 flex flex-wrap gap-2">
-                            {finalResult.referenceAnswer.requiredConcepts.map(
-                              (concept) => (
-                                <span
-                                  key={concept}
-                                  className="rounded-full border border-slate-700 px-3 py-1 text-slate-300"
-                                >
-                                  {concept}
-                                </span>
-                              ),
-                            )}
-                          </dd>
-                        </div>
-                      </dl>
-                    </div>
-                  </section>
+                  <RaceResults
+                    challenge={race.challenge}
+                    playerId={playerId}
+                    result={finalResult}
+                  />
                 ) : (
                   <section className="mt-8 border-t border-slate-800 pt-8">
                     <h3 className="text-2xl font-bold">Submit your answer</h3>
@@ -887,7 +850,13 @@ export default function Home() {
                           minLength={10}
                           maxLength={2_000}
                           rows={6}
-                          disabled={hasSubmitted || ownEvaluation !== null}
+                          disabled={
+                            hasSubmitted ||
+                            isEvaluating ||
+                            hasTimedOut ||
+                            ownEvaluation !== null ||
+                            deadlineReached
+                          }
                           aria-describedby="explanation-count"
                           placeholder="Explain the root cause…"
                           className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 outline-none focus:border-cyan-400 disabled:opacity-60"
@@ -918,7 +887,13 @@ export default function Home() {
                           required
                           maxLength={4_000}
                           rows={7}
-                          disabled={hasSubmitted || ownEvaluation !== null}
+                          disabled={
+                            hasSubmitted ||
+                            isEvaluating ||
+                            hasTimedOut ||
+                            ownEvaluation !== null ||
+                            deadlineReached
+                          }
                           aria-describedby="proposed-fix-count"
                           placeholder="Show the corrected TypeScript…"
                           className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 font-mono text-sm outline-none focus:border-cyan-400 disabled:opacity-60"
@@ -934,14 +909,21 @@ export default function Home() {
                           ? "Submitting…"
                           : hasSubmitted || ownEvaluation
                             ? "Submitted"
-                            : "Submit answer"}
+                            : isEvaluating
+                              ? "Evaluating…"
+                              : "Submit answer"}
                       </button>
                     </form>
 
-                    {deadlinePassed ? (
-                      <p className="mt-4 text-sm text-rose-300">
-                        The submission deadline has passed.
-                      </p>
+                    {deadlineReached ? (
+                      <div className="mt-4 rounded-xl border border-amber-900 bg-amber-950/30 px-4 py-3 text-sm">
+                        <p className="font-semibold text-amber-300">
+                          Time expired
+                        </p>
+                        <p className="mt-1 text-slate-400">
+                          Waiting for final results.
+                        </p>
+                      </div>
                     ) : null}
 
                     {submissionError ? (
@@ -951,6 +933,19 @@ export default function Home() {
                       >
                         {submissionError}
                       </p>
+                    ) : null}
+
+                    {isEvaluating ? (
+                      <div className="mt-6 rounded-xl border border-cyan-900 bg-cyan-950/30 p-5">
+                        <p className="font-semibold text-cyan-300">
+                          Submission accepted
+                        </p>
+                        <p className="mt-2 text-slate-300">
+                          {room.status === "FINALIZING"
+                            ? "Finalizing evaluations…"
+                            : "Evaluating your answer…"}
+                        </p>
+                      </div>
                     ) : null}
 
                     {ownEvaluation ? (
@@ -967,28 +962,72 @@ export default function Home() {
                         <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
                           <div>
                             <dt className="text-slate-500">Root cause</dt>
-                            <dd>{ownEvaluation.rootCauseScore} / 35</dd>
+                            <dd>{ownEvaluation.score.rootCauseScore} / 35</dd>
                           </div>
                           <div>
                             <dt className="text-slate-500">Fix</dt>
-                            <dd>{ownEvaluation.fixScore} / 35</dd>
+                            <dd>{ownEvaluation.score.fixScore} / 35</dd>
                           </div>
                           <div>
                             <dt className="text-slate-500">Reasoning</dt>
-                            <dd>{ownEvaluation.reasoningScore} / 15</dd>
+                            <dd>{ownEvaluation.score.reasoningScore} / 20</dd>
                           </div>
                           <div>
                             <dt className="text-slate-500">Final score</dt>
                             <dd className="font-semibold text-cyan-300">
-                              {ownEvaluation.finalScore} / 85
+                              {ownEvaluation.score.finalScore} / 100
                             </dd>
                           </div>
                         </dl>
                         <p className="mt-4 text-sm text-slate-300">
-                          {ownEvaluation.feedback}
+                          {ownEvaluation.evaluation.feedback}
                         </p>
+                        <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+                          <div>
+                            <dt className="text-slate-500">Evaluator</dt>
+                            <dd>
+                              {ownEvaluation.evaluation.source === "OPENAI"
+                                ? "OpenAI evaluation"
+                                : ownEvaluation.evaluation.source ===
+                                    "MOCK_FALLBACK"
+                                  ? "Fallback evaluator used"
+                                  : "Deterministic evaluator"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Confidence</dt>
+                            <dd>
+                              {Math.round(
+                                ownEvaluation.evaluation.confidence * 100,
+                              )}
+                              %
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">
+                              Detected concepts
+                            </dt>
+                            <dd>
+                              {ownEvaluation.evaluation.detectedConcepts.join(
+                                ", ",
+                              ) || "None"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Missing concepts</dt>
+                            <dd>
+                              {ownEvaluation.evaluation.missingConcepts.join(
+                                ", ",
+                              ) || "None"}
+                            </dd>
+                          </div>
+                        </dl>
                         <p className="mt-4 text-sm text-slate-400">
-                          Waiting for other players.
+                          {room.status === "FINALIZING"
+                            ? "Finalizing evaluations…"
+                            : deadlineReached
+                              ? "Waiting for final results."
+                              : "Waiting for other players."}
                         </p>
                       </div>
                     ) : null}

@@ -9,13 +9,26 @@ import { z } from "zod";
 
 import { publicChallenge } from "../game/challenge.js";
 import {
+  EvaluationError,
+  type EvaluationFailureCode,
+  type SubmissionEvaluator,
+} from "../game/evaluator.js";
+import {
+  advanceRace,
+  clearRaceDeadline,
+  scheduleRaceDeadline,
+} from "../game/race-deadline.js";
+import {
   activateRace,
+  completeSubmissionEvaluation,
   createRoom,
-  finishRaceIfReady,
+  failSubmissionEvaluation,
   joinRoom,
+  markSubmissionEvaluationStarted,
   removePlayer,
+  reserveSubmission,
   startRace,
-  submitAnswer,
+  type SubmissionReservationData,
 } from "../game/room-service.js";
 
 export interface SocketData {
@@ -23,7 +36,7 @@ export interface SocketData {
   roomCode?: string;
 }
 
-type BugRaceServer = Server<
+export type BugRaceServer = Server<
   ClientToServerEvents,
   ServerToClientEvents,
   DefaultEventsMap,
@@ -53,20 +66,90 @@ function serverFailure<T>(): AckResult<T> {
   };
 }
 
-function finishRaceAndBroadcast(io: BugRaceServer, roomCode: string): void {
-  const completion = finishRaceIfReady(roomCode);
+function normalizeEvaluationFailure(error: unknown): EvaluationFailureCode {
+  return error instanceof EvaluationError
+    ? error.code
+    : "EVALUATION_UNAVAILABLE";
+}
 
-  if (!completion) {
-    return;
+async function evaluateReservedSubmission(
+  io: BugRaceServer,
+  evaluator: SubmissionEvaluator,
+  roomCode: string,
+  reservation: SubmissionReservationData,
+): Promise<void> {
+  const startedAt = Date.now();
+  markSubmissionEvaluationStarted(
+    roomCode,
+    reservation.playerId,
+    reservation.submissionId,
+    startedAt,
+  );
+
+  try {
+    const semanticEvaluation = await evaluator.evaluate(
+      reservation.evaluationInput,
+    );
+    const completedAt = Date.now();
+    const completion = completeSubmissionEvaluation(
+      roomCode,
+      reservation.playerId,
+      reservation.submissionId,
+      semanticEvaluation,
+      completedAt,
+    );
+
+    if (!completion) {
+      console.error(
+        `Evaluation discarded submission=${reservation.submissionId} challenge=${publicChallenge.id} category=invalid-state`,
+      );
+      return;
+    }
+
+    console.log(
+      `Evaluation completed submission=${completion.submissionId} challenge=${publicChallenge.id} source=${completion.evaluation.evaluation.source} durationMs=${completedAt - startedAt}`,
+    );
+    io.to(completion.socketId).emit("submission:evaluated", {
+      submissionId: completion.submissionId,
+      ...completion.evaluation,
+    });
+    io.to(roomCode).emit("room:state", completion.room);
+    advanceRace(io, roomCode, completedAt);
+  } catch (error) {
+    const failedAt = Date.now();
+    const failureCode = normalizeEvaluationFailure(error);
+    const failure = failSubmissionEvaluation(
+      roomCode,
+      reservation.playerId,
+      reservation.submissionId,
+      failedAt,
+    );
+
+    console.error(
+      `Evaluation failed submission=${reservation.submissionId} challenge=${publicChallenge.id} category=${failureCode} durationMs=${failedAt - startedAt}`,
+    );
+
+    if (!failure) {
+      return;
+    }
+
+    io.to(failure.socketId).emit("submission:evaluation-failed", {
+      submissionId: failure.submissionId,
+      code: failureCode,
+      message: failure.retryAllowed
+        ? "Evaluation failed. You can submit again before the deadline."
+        : "Evaluation failed after submissions closed.",
+      retryAllowed: failure.retryAllowed,
+    });
+    io.to(roomCode).emit("room:state", failure.room);
+    advanceRace(io, roomCode, failedAt);
   }
-
-  io.to(roomCode).emit("room:state", completion.room);
-  io.to(roomCode).emit("race:finished", completion.result);
 }
 
 export function registerSocketHandlers(
   io: BugRaceServer,
   socket: BugRaceSocket,
+  evaluator: SubmissionEvaluator,
 ): void {
   console.log(`Socket connected: ${socket.id}`);
 
@@ -162,6 +245,7 @@ export function registerSocketHandlers(
       endsAt,
     });
     acknowledge({ ok: true, data: { accepted: true } });
+    scheduleRaceDeadline(io, room.code, endsAt);
 
     const activationTimer = setTimeout(
       () => {
@@ -178,17 +262,17 @@ export function registerSocketHandlers(
   });
 
   socket.on("race:submit", (payload, acknowledge) => {
-    const result = submitAnswer(
+    const receivedAt = Date.now();
+    const result = reserveSubmission(
       payload,
       socket.data.playerId,
       socket.data.roomCode,
+      receivedAt,
     );
 
     if (!result.ok) {
-      if (result.error.code === "EVALUATION_FAILED") {
-        console.error(
-          `Submission evaluation failed in room ${socket.data.roomCode ?? "unknown"}`,
-        );
+      if (result.error.code === "RACE_ENDED" && socket.data.roomCode) {
+        advanceRace(io, socket.data.roomCode, receivedAt);
       }
 
       acknowledge(result);
@@ -199,11 +283,18 @@ export function registerSocketHandlers(
       ok: true,
       data: {
         submissionId: result.data.submissionId,
-        evaluation: result.data.evaluation,
+        acceptedAt: result.data.acceptedAt,
+        status: result.data.status,
       },
     });
     io.to(result.data.room.code).emit("room:state", result.data.room);
-    finishRaceAndBroadcast(io, result.data.room.code);
+    advanceRace(io, result.data.room.code, receivedAt);
+    void evaluateReservedSubmission(
+      io,
+      evaluator,
+      result.data.room.code,
+      result.data,
+    );
   });
 
   socket.on("disconnect", (reason) => {
@@ -219,8 +310,10 @@ export function registerSocketHandlers(
 
     if (room) {
       io.to(room.code).emit("room:state", room);
+    } else {
+      clearRaceDeadline(roomCode);
     }
 
-    finishRaceAndBroadcast(io, roomCode);
+    advanceRace(io, roomCode);
   });
 }
