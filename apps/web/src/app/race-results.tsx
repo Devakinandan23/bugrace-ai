@@ -189,7 +189,7 @@ export function RaceResults({ challenge, playerId, result }: RaceResultsProps) {
   return (
     <section className="results-celebration mt-8 border-t border-slate-800 pt-8">
       <p className="text-sm font-semibold uppercase tracking-[0.2em] text-emerald-300">
-        Race finished
+        Race complete
       </p>
       <h3 className="mt-2 text-3xl font-bold">Final leaderboard</h3>
       <p className="mt-2 text-sm text-slate-400">
