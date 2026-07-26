@@ -8,7 +8,8 @@ const baseInput: Omit<EvaluationInput, "submission"> = {
   challenge: {
     title: "The Array of Promises",
     scenario: "Load users",
-    language: "typescript",
+    language: "TYPESCRIPT",
+    difficulty: "MEDIUM",
     buggyCode: "ids.map(async (id) => fetchUser(id))",
   },
   rubric: {
@@ -63,4 +64,104 @@ test("prompt injection text cannot change deterministic scoring", async () => {
     [result.rootCauseScore, result.fixScore, result.reasoningScore],
     [0, 0, 0],
   );
+});
+
+test("mock evaluator recognizes C++ std::future collection fixes", async () => {
+  const result = await mockSubmissionEvaluator.evaluate({
+    challenge: {
+      ...baseInput.challenge,
+      language: "CPP",
+      buggyCode:
+        "std::vector<std::future<User>> users;\nusers.push_back(std::async(fetchUser, id));",
+    },
+    rubric: {
+      ...baseInput.rubric,
+      rootCause: "std::async returns std::future values.",
+      referenceFix: "Call get on each future before returning the users.",
+      requiredConcepts: [
+        "std::future",
+        "result collection",
+        "future resolution",
+      ],
+    },
+    submission: {
+      explanation:
+        "std::async returns std::future values, so the vector is a collection of unresolved results.",
+      proposedFix:
+        "for (auto& future : users) resolved.push_back(future.get());",
+    },
+  });
+
+  assert.deepEqual(
+    [result.rootCauseScore, result.fixScore, result.reasoningScore],
+    [35, 35, 20],
+  );
+  assert.deepEqual(result.missingConcepts, []);
+});
+
+test("mock evaluator recognizes Java CompletableFuture collection fixes", async () => {
+  const result = await mockSubmissionEvaluator.evaluate({
+    challenge: {
+      ...baseInput.challenge,
+      language: "JAVA",
+      buggyCode:
+        "List<CompletableFuture<User>> users = ids.stream().map(this::fetchUser).toList();",
+    },
+    rubric: {
+      ...baseInput.rubric,
+      rootCause: "The list contains unresolved CompletableFuture values.",
+      referenceFix:
+        "Wait for all futures and join each result before returning.",
+      requiredConcepts: [
+        "CompletableFuture",
+        "result collection",
+        "future resolution",
+      ],
+    },
+    submission: {
+      explanation:
+        "The list is a collection of CompletableFuture values rather than resolved users.",
+      proposedFix:
+        "return CompletableFuture.allOf(futures).thenApply(v -> futures.stream().map(CompletableFuture::join).toList());",
+    },
+  });
+
+  assert.deepEqual(
+    [result.rootCauseScore, result.fixScore, result.reasoningScore],
+    [35, 35, 20],
+  );
+  assert.deepEqual(result.missingConcepts, []);
+});
+
+test("mock evaluator recognizes Python coroutine collection fixes", async () => {
+  const result = await mockSubmissionEvaluator.evaluate({
+    challenge: {
+      ...baseInput.challenge,
+      language: "PYTHON",
+      buggyCode:
+        "async def get_users(ids):\n    return [fetch_user(user_id) for user_id in ids]",
+    },
+    rubric: {
+      ...baseInput.rubric,
+      rootCause: "The list contains unresolved coroutine objects.",
+      referenceFix: "Await the calls with asyncio.gather.",
+      requiredConcepts: [
+        "coroutine",
+        "result collection",
+        "coroutine resolution",
+      ],
+    },
+    submission: {
+      explanation:
+        "The list comprehension creates a collection of coroutine objects instead of resolved users.",
+      proposedFix:
+        "return await asyncio.gather(*(fetch_user(user_id) for user_id in ids))",
+    },
+  });
+
+  assert.deepEqual(
+    [result.rootCauseScore, result.fixScore, result.reasoningScore],
+    [35, 35, 20],
+  );
+  assert.deepEqual(result.missingConcepts, []);
 });

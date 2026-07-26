@@ -2,17 +2,17 @@ import { randomUUID } from "node:crypto";
 
 import type OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
+import type { PublicRoomSettings } from "@bugrace/shared";
 import { z } from "zod";
 
 import type { env } from "../config/env.js";
 import {
-  curatedChallenge,
+  getCuratedChallenge,
   type GeneratedChallenge,
   type StoredChallenge,
 } from "./challenge-data.js";
 
-const GENERATION_INSTRUCTIONS = `Create one compact TypeScript debugging challenge for a multiplayer
-developer game.
+const GENERATION_INSTRUCTIONS = `Create one compact debugging challenge for a multiplayer developer game.
 
 The challenge must contain exactly one primary technical defect.
 
@@ -20,16 +20,13 @@ It must be solvable by reading and reasoning about the code. It must
 not require execution, external files, dependencies or internet access.
 
 The buggy code must contain at most 25 non-empty lines.
-
-Use one supported topic:
-- asynchronous JavaScript;
-- object-level authorization;
-- database concurrency.
+The buggy code must use the requested language and valid syntax for that
+language. The challenge difficulty must be appropriate to the requested level.
 
 Provide:
 - a short title;
 - a realistic scenario;
-- buggy TypeScript code;
+- buggy code in the requested language;
 - the exact root cause;
 - a technically valid reference fix;
 - required concepts;
@@ -55,8 +52,7 @@ export const generatedChallengeSchema = z
   .object({
     title: z.string().trim().min(5).max(80),
     scenario: z.string().trim().min(20).max(300),
-    language: z.literal("typescript"),
-    topic: z.enum(["ASYNC_JAVASCRIPT", "AUTHORIZATION", "CONCURRENCY"]),
+    language: z.enum(["JAVASCRIPT", "TYPESCRIPT", "CPP", "JAVA", "PYTHON"]),
     difficulty: z.enum(["EASY", "MEDIUM", "HARD"]),
     buggyCode: z.string().trim().min(20).max(2_500),
     rootCause: z.string().trim().min(30).max(500),
@@ -84,7 +80,7 @@ export class ChallengeGenerationError extends Error {
 }
 
 export interface ChallengeGenerator {
-  generate(): Promise<GeneratedChallenge>;
+  generate(settings: PublicRoomSettings): Promise<GeneratedChallenge>;
 }
 
 const dangerousCodePatterns = [
@@ -97,6 +93,10 @@ const dangerousCodePatterns = [
   /rm\s+-rf/i,
   /fs\s*\.\s*rm/i,
   /fs\s*\.\s*unlink/i,
+  /os\s*\.\s*environ/i,
+  /\bsubprocess\b/i,
+  /shutil\s*\.\s*rmtree/i,
+  /os\s*\.\s*(?:remove|unlink|system)\s*\(/i,
   /\bcurl\b/i,
   /\bwget\b/i,
 ];
@@ -115,14 +115,20 @@ export function challengeFingerprint(input: {
   return normalizedText(`${input.title}\n${input.buggyCode}`);
 }
 
-function codeComments(code: string): string {
-  const comments = code.match(/\/\/.*$|\/\*[\s\S]*?\*\//gm);
+function codeComments(
+  code: string,
+  language: GeneratedChallengeOutput["language"],
+): string {
+  const comments =
+    language === "PYTHON"
+      ? code.match(/#.*$/gm)
+      : code.match(/\/\/.*$|\/\*[\s\S]*?\*\//gm);
   return comments?.join("\n") ?? "";
 }
 
 function publicFieldsRevealAnswer(input: GeneratedChallengeOutput): boolean {
   const disclosureSurface = normalizedText(
-    `${input.title}\n${input.scenario}\n${codeComments(input.buggyCode)}`,
+    `${input.title}\n${input.scenario}\n${codeComments(input.buggyCode, input.language)}`,
   );
   const identifiers =
     input.buggyCode
@@ -149,6 +155,7 @@ function publicFieldsRevealAnswer(input: GeneratedChallengeOutput): boolean {
 
 export function validateGeneratedChallenge(
   input: unknown,
+  settings: PublicRoomSettings,
   recentFingerprints: ReadonlySet<string> = new Set(),
 ): GeneratedChallenge {
   const parsed = generatedChallengeSchema.safeParse(input);
@@ -166,6 +173,20 @@ export function validateGeneratedChallenge(
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0).length;
   const normalizedConcepts = challenge.requiredConcepts.map(normalizedText);
+
+  if (challenge.language !== settings.language) {
+    throw new ChallengeGenerationError(
+      "INVALID",
+      "Generated challenge language does not match the room language.",
+    );
+  }
+
+  if (challenge.difficulty !== settings.difficulty) {
+    throw new ChallengeGenerationError(
+      "INVALID",
+      "Generated challenge difficulty does not match the room difficulty.",
+    );
+  }
 
   if (nonEmptyLines > 25) {
     throw new ChallengeGenerationError(
@@ -210,7 +231,6 @@ export function validateGeneratedChallenge(
       title: challenge.title,
       scenario: challenge.scenario,
       language: challenge.language,
-      topic: challenge.topic,
       difficulty: challenge.difficulty,
       buggyCode: challenge.buggyCode,
       source: "AI_GENERATED",
@@ -263,13 +283,22 @@ export class OpenAIChallengeGenerator implements ChallengeGenerator {
     private readonly timeoutMs: number,
   ) {}
 
-  async generate(): Promise<GeneratedChallenge> {
+  async generate(settings: PublicRoomSettings): Promise<GeneratedChallenge> {
     try {
       const response = await this.openai.responses.parse(
         {
           model: this.model,
           store: false,
-          input: [{ role: "system", content: GENERATION_INSTRUCTIONS }],
+          input: [
+            { role: "system", content: GENERATION_INSTRUCTIONS },
+            {
+              role: "user",
+              content: JSON.stringify({
+                language: settings.language,
+                difficulty: settings.difficulty,
+              }),
+            },
+          ],
           text: {
             format: zodTextFormat(
               generatedChallengeSchema,
@@ -296,6 +325,7 @@ export class OpenAIChallengeGenerator implements ChallengeGenerator {
 
       const challenge = validateGeneratedChallenge(
         response.output_parsed,
+        settings,
         this.recentFingerprints,
       );
       this.recentFingerprints.add(challengeFingerprint(challenge.public));
@@ -350,10 +380,29 @@ export function createChallengeGenerator(
 
 export async function generateChallengeOrFallback(
   generator: ChallengeGenerator,
+  settings: PublicRoomSettings,
 ): Promise<{ challenge: StoredChallenge; fallbackUsed: boolean }> {
   try {
-    return { challenge: await generator.generate(), fallbackUsed: false };
+    const challenge = await generator.generate(settings);
+
+    if (
+      challenge.public.language !== settings.language ||
+      challenge.public.difficulty !== settings.difficulty
+    ) {
+      throw new ChallengeGenerationError(
+        "INVALID",
+        "Generated challenge settings do not match the room.",
+      );
+    }
+
+    return {
+      challenge,
+      fallbackUsed: false,
+    };
   } catch {
-    return { challenge: curatedChallenge, fallbackUsed: true };
+    return {
+      challenge: getCuratedChallenge(settings),
+      fallbackUsed: true,
+    };
   }
 }

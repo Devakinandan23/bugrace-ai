@@ -1,7 +1,10 @@
-import type { PublicChallenge } from "@bugrace/shared";
+import type { PublicChallenge, PublicRoomSettings } from "@bugrace/shared";
 
-import { publicChallenge } from "./challenge.js";
-import { privateEvaluationData } from "./private-evaluation.js";
+import { createCuratedPublicChallenge, publicChallenge } from "./challenge.js";
+import {
+  createPrivateEvaluationData,
+  privateEvaluationData,
+} from "./private-evaluation.js";
 
 export interface ChallengePrivateData {
   rootCause: string;
@@ -25,3 +28,12 @@ export const curatedChallenge: StoredChallenge = {
   public: publicChallenge,
   private: privateEvaluationData,
 };
+
+export function getCuratedChallenge(
+  settings: PublicRoomSettings,
+): StoredChallenge {
+  return {
+    public: createCuratedPublicChallenge(settings),
+    private: createPrivateEvaluationData(settings.language),
+  };
+}

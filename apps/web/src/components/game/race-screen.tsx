@@ -4,6 +4,11 @@ import type {
   SubmissionEvaluation,
 } from "@bugrace/shared";
 
+import {
+  difficultyLabels,
+  durationLabels,
+  languageLabels,
+} from "./challenge-labels";
 import { PlayerList } from "./player-list";
 
 interface RaceScreenProps {
@@ -144,16 +149,24 @@ export function RaceScreen({
         <div className="mx-auto mt-7 max-w-xl">
           <Timer label={timerLabel} progress={progress} />
         </div>
-        <dl className="mx-auto mt-7 grid max-w-xl gap-3 text-left sm:grid-cols-2">
+        <dl className="mx-auto mt-7 grid max-w-2xl gap-3 text-left sm:grid-cols-3">
           <div className="game-tile p-4">
-            <dt className="text-sm text-slate-500">Category</dt>
+            <dt className="text-sm text-slate-500">Language</dt>
             <dd className="mt-1 font-semibold">
-              {race.challenge.topic.replaceAll("_", " ")}
+              {languageLabels[room.settings.language]}
             </dd>
           </div>
           <div className="game-tile p-4">
             <dt className="text-sm text-slate-500">Difficulty</dt>
-            <dd className="mt-1 font-semibold">{race.challenge.difficulty}</dd>
+            <dd className="mt-1 font-semibold">
+              {difficultyLabels[room.settings.difficulty]}
+            </dd>
+          </div>
+          <div className="game-tile p-4">
+            <dt className="text-sm text-slate-500">Race time</dt>
+            <dd className="mt-1 font-semibold">
+              {durationLabels[room.settings.durationSeconds]}
+            </dd>
           </div>
         </dl>
         <div className="mx-auto mt-7 max-w-xl text-left">
@@ -177,13 +190,13 @@ export function RaceScreen({
         </p>
         <dl className="mt-5 flex flex-wrap gap-2 text-xs">
           <div className="rounded-full bg-cyan-950 px-3 py-1.5">
-            {race.challenge.language}
-          </div>
-          <div className="rounded-full bg-emerald-950 px-3 py-1.5">
-            {race.challenge.topic.replaceAll("_", " ")}
+            Language: {languageLabels[room.settings.language]}
           </div>
           <div className="rounded-full bg-amber-950 px-3 py-1.5">
-            {race.challenge.difficulty}
+            Difficulty: {difficultyLabels[room.settings.difficulty]}
+          </div>
+          <div className="rounded-full bg-emerald-950 px-3 py-1.5">
+            Race time: {durationLabels[room.settings.durationSeconds]}
           </div>
         </dl>
         <div className="mt-6">
@@ -258,7 +271,7 @@ export function RaceScreen({
                   maxLength={4_000}
                   rows={6}
                   disabled={submissionLocked}
-                  placeholder="Show the corrected TypeScript…"
+                  placeholder={`Show the corrected ${languageLabels[room.settings.language]}…`}
                   className="game-field mt-2 w-full resize-y px-4 py-3 font-mono text-sm outline-none"
                 />
               </div>

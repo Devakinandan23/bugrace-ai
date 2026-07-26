@@ -1,6 +1,7 @@
 import type {
   AckResult,
   ClientToServerEvents,
+  PublicRoomSettings,
   RoomMembershipData,
   ServerToClientEvents,
 } from "@bugrace/shared";
@@ -29,9 +30,11 @@ import {
   failSubmissionEvaluation,
   joinRoom,
   markSubmissionEvaluationStarted,
+  recoverRacePreparationWithCuratedChallenge,
   removePlayer,
   reserveSubmission,
   startRace,
+  updateRoomSettings,
   type ReadyRaceStartData,
   type SubmissionReservationData,
 } from "../game/room-service.js";
@@ -188,20 +191,27 @@ async function prepareGeneratedRace(
   generator: ChallengeGenerator,
   roomCode: string,
   hostSocketId: string,
+  settings: PublicRoomSettings,
 ): Promise<void> {
   const generationStartedAt = Date.now();
-  const resolution = await generateChallengeOrFallback(generator);
-  const readyRace = completeRacePreparation(roomCode, resolution.challenge);
+  const resolution = await generateChallengeOrFallback(generator, settings);
+  let readyRace = completeRacePreparation(roomCode, resolution.challenge);
+  let fallbackUsed = resolution.fallbackUsed;
 
   if (!readyRace) {
-    return;
+    readyRace = recoverRacePreparationWithCuratedChallenge(roomCode);
+    fallbackUsed = true;
+
+    if (!readyRace) {
+      return;
+    }
   }
 
   console.log(
     `Challenge prepared room=${roomCode} challenge=${readyRace.challenge.id} source=${readyRace.challenge.source} durationMs=${Date.now() - generationStartedAt}`,
   );
 
-  if (resolution.fallbackUsed) {
+  if (fallbackUsed) {
     io.to(hostSocketId).emit("race:challenge-fallback", {
       message: challengeFallbackMessage,
     });
@@ -288,6 +298,20 @@ export function registerSocketHandlers(
     }
   });
 
+  socket.on("room:update-settings", (payload, acknowledge) => {
+    const result = updateRoomSettings(
+      payload,
+      socket.data.playerId,
+      socket.data.roomCode,
+    );
+
+    acknowledge(result);
+
+    if (result.ok) {
+      io.to(result.data.code).emit("room:state", result.data);
+    }
+  });
+
   socket.on("race:start", (payload, acknowledge) => {
     const result = startRace(
       payload,
@@ -312,6 +336,7 @@ export function registerSocketHandlers(
           challengeGenerator,
           result.data.room.code,
           socket.id,
+          result.data.room.settings,
         );
       }
 

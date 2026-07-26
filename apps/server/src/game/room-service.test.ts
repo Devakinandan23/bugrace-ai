@@ -11,9 +11,12 @@ import {
   completeSubmissionEvaluation,
   completeRacePreparation,
   createRoom,
+  failSubmissionEvaluation,
   joinRoom,
+  recoverRacePreparationWithCuratedChallenge,
   reserveSubmission,
   startRace,
+  updateRoomSettings,
   type RaceStartData,
   type ReadyRaceStartData,
 } from "./room-service.js";
@@ -76,16 +79,19 @@ function semanticEvaluation(
   };
 }
 
-function generatedChallenge(): StoredChallenge {
+function generatedChallenge(
+  language:
+    "JAVASCRIPT" | "TYPESCRIPT" | "CPP" | "JAVA" | "PYTHON" = "TYPESCRIPT",
+  difficulty: "EASY" | "MEDIUM" | "HARD" = "MEDIUM",
+): StoredChallenge {
   return {
     public: {
       id: "ai-room-test",
       title: "Overlapping Balance Updates",
       scenario:
         "Two account adjustments overlap and one completed change disappears.",
-      language: "typescript",
-      topic: "CONCURRENCY",
-      difficulty: "MEDIUM",
+      language,
+      difficulty,
       buggyCode:
         "const account = await read(id);\nawait write(id, account.balance + delta);",
       source: "AI_GENERATED",
@@ -100,6 +106,233 @@ function generatedChallenge(): StoredChallenge {
     },
   };
 }
+
+test("new rooms default to TypeScript, Medium, and two minutes", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Default Host" }, "default-settings-host", false),
+  );
+
+  assert.deepEqual(host.room.settings, {
+    language: "TYPESCRIPT",
+    difficulty: "MEDIUM",
+    durationSeconds: 120,
+  });
+});
+
+test("host can update language, difficulty, and race duration", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Settings Host" }, "settings-host", false),
+  );
+
+  const languageUpdate = expectSuccess(
+    updateRoomSettings(
+      {
+        roomCode: host.room.code,
+        language: "PYTHON",
+        difficulty: "MEDIUM",
+        durationSeconds: 120,
+      },
+      host.playerId,
+      host.room.code,
+    ),
+  );
+  assert.equal(languageUpdate.settings.language, "PYTHON");
+
+  const difficultyUpdate = expectSuccess(
+    updateRoomSettings(
+      {
+        roomCode: host.room.code,
+        language: "PYTHON",
+        difficulty: "HARD",
+        durationSeconds: 300,
+      },
+      host.playerId,
+      host.room.code,
+    ),
+  );
+  assert.equal(difficultyUpdate.settings.difficulty, "HARD");
+  assert.equal(difficultyUpdate.settings.durationSeconds, 300);
+});
+
+test("Python selection starts a matching curated challenge", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Python Host" }, "python-host", false),
+  );
+  expectSuccess(
+    joinRoom(
+      { username: "Python Guest", roomCode: host.room.code },
+      "python-guest",
+      false,
+    ),
+  );
+  expectSuccess(
+    updateRoomSettings(
+      {
+        roomCode: host.room.code,
+        language: "PYTHON",
+        difficulty: "MEDIUM",
+        durationSeconds: 120,
+      },
+      host.playerId,
+      host.room.code,
+    ),
+  );
+
+  const started = expectReadyStart(
+    startRace({ roomCode: host.room.code }, host.playerId, host.room.code),
+  );
+
+  assert.equal(started.challenge.language, "PYTHON");
+  assert.match(started.challenge.buggyCode, /async def get_users/);
+});
+
+test("non-host cannot update room settings", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Host Settings" }, "settings-owner", false),
+  );
+  const guest = expectSuccess(
+    joinRoom(
+      { username: "Guest Settings", roomCode: host.room.code },
+      "settings-guest",
+      false,
+    ),
+  );
+  const result = updateRoomSettings(
+    {
+      roomCode: host.room.code,
+      language: "CPP",
+      difficulty: "HARD",
+      durationSeconds: 120,
+    },
+    guest.playerId,
+    host.room.code,
+  );
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "HOST_ONLY");
+  }
+});
+
+test("invalid language and difficulty use stable errors", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Validation Host" }, "validation-host", false),
+  );
+  const invalidLanguage = updateRoomSettings(
+    {
+      roomCode: host.room.code,
+      language: "RUBY",
+      difficulty: "MEDIUM",
+      durationSeconds: 120,
+    },
+    host.playerId,
+    host.room.code,
+  );
+  const invalidDifficulty = updateRoomSettings(
+    {
+      roomCode: host.room.code,
+      language: "TYPESCRIPT",
+      difficulty: "EXTREME",
+      durationSeconds: 120,
+    },
+    host.playerId,
+    host.room.code,
+  );
+
+  assert.equal(invalidLanguage.ok, false);
+  assert.equal(invalidDifficulty.ok, false);
+  if (!invalidLanguage.ok) {
+    assert.equal(invalidLanguage.error.code, "INVALID_LANGUAGE");
+  }
+  if (!invalidDifficulty.ok) {
+    assert.equal(invalidDifficulty.error.code, "INVALID_DIFFICULTY");
+  }
+});
+
+test("invalid race duration uses a stable error", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Duration Host" }, "duration-host", false),
+  );
+  const result = updateRoomSettings(
+    {
+      roomCode: host.room.code,
+      language: "TYPESCRIPT",
+      difficulty: "MEDIUM",
+      durationSeconds: 90,
+    },
+    host.playerId,
+    host.room.code,
+  );
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "INVALID_DURATION");
+  }
+});
+
+test("settings cannot change after race preparation starts", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Prepared Host" }, "prepared-host", false),
+  );
+  expectSuccess(
+    joinRoom(
+      { username: "Prepared Guest", roomCode: host.room.code },
+      "prepared-guest",
+      false,
+    ),
+  );
+  expectSuccess(
+    startRace(
+      { roomCode: host.room.code, generateChallenge: true },
+      host.playerId,
+      host.room.code,
+      true,
+    ),
+  );
+
+  const result = updateRoomSettings(
+    {
+      roomCode: host.room.code,
+      language: "JAVA",
+      difficulty: "HARD",
+      durationSeconds: 300,
+    },
+    host.playerId,
+    host.room.code,
+  );
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "ROOM_NOT_CONFIGURABLE");
+  }
+});
+
+test("all room members receive the same stored settings", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Shared Host" }, "shared-settings-host", false),
+  );
+  const updated = expectSuccess(
+    updateRoomSettings(
+      {
+        roomCode: host.room.code,
+        language: "CPP",
+        difficulty: "EASY",
+        durationSeconds: 60,
+      },
+      host.playerId,
+      host.room.code,
+    ),
+  );
+  const guest = expectSuccess(
+    joinRoom(
+      { username: "Shared Guest", roomCode: host.room.code },
+      "shared-settings-guest",
+      false,
+    ),
+  );
+
+  assert.deepEqual(guest.room.settings, updated.settings);
+});
 
 test("non-host AI generation request is rejected", () => {
   const host = expectSuccess(
@@ -196,6 +429,18 @@ test("stored generated challenge stays public/private separated and drives evalu
       false,
     ),
   );
+  expectSuccess(
+    updateRoomSettings(
+      {
+        roomCode: host.room.code,
+        language: "JAVA",
+        difficulty: "HARD",
+        durationSeconds: 180,
+      },
+      host.playerId,
+      host.room.code,
+    ),
+  );
   const preparation = expectSuccess(
     startRace(
       { roomCode: host.room.code, generateChallenge: true },
@@ -206,7 +451,7 @@ test("stored generated challenge stays public/private separated and drives evalu
   );
   assert.equal(preparation.generationRequested, true);
 
-  const challenge = generatedChallenge();
+  const challenge = generatedChallenge("JAVA", "HARD");
   const ready = completeRacePreparation(host.room.code, challenge);
 
   assert.ok(ready);
@@ -238,6 +483,14 @@ test("stored generated challenge stays public/private separated and drives evalu
     challenge.public.buggyCode,
   );
   assert.equal(
+    reservation.evaluationInput.challenge.language,
+    ready.room.settings.language,
+  );
+  assert.equal(
+    reservation.evaluationInput.challenge.difficulty,
+    ready.room.settings.difficulty,
+  );
+  assert.equal(
     reservation.evaluationInput.rubric.rootCause,
     challenge.private.rootCause,
   );
@@ -245,6 +498,73 @@ test("stored generated challenge stays public/private separated and drives evalu
     reservation.evaluationInput.rubric.acceptedAlternatives,
     challenge.private.acceptedAlternatives,
   );
+});
+
+test("invalid generated challenge recovers with a curated countdown", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Recovery Host" }, "recovery-host", false),
+  );
+  expectSuccess(
+    joinRoom(
+      { username: "Recovery Guest", roomCode: host.room.code },
+      "recovery-guest",
+      false,
+    ),
+  );
+  expectSuccess(
+    startRace(
+      { roomCode: host.room.code, generateChallenge: true },
+      host.playerId,
+      host.room.code,
+      true,
+    ),
+  );
+
+  const incompatibleChallenge = generatedChallenge("JAVA", "HARD");
+  assert.equal(
+    completeRacePreparation(host.room.code, incompatibleChallenge),
+    null,
+  );
+
+  const recovered = recoverRacePreparationWithCuratedChallenge(host.room.code);
+
+  assert.ok(recovered);
+  assert.equal(recovered.room.status, "COUNTDOWN");
+  assert.equal(recovered.challenge.source, "CURATED");
+  assert.equal(recovered.challenge.language, "TYPESCRIPT");
+  assert.equal(recovered.challenge.difficulty, "MEDIUM");
+});
+
+test("selected race duration determines the authoritative deadline", () => {
+  const host = expectSuccess(
+    createRoom({ username: "Timed Host" }, "timed-host", false),
+  );
+  expectSuccess(
+    joinRoom(
+      { username: "Timed Guest", roomCode: host.room.code },
+      "timed-guest",
+      false,
+    ),
+  );
+  expectSuccess(
+    updateRoomSettings(
+      {
+        roomCode: host.room.code,
+        language: "TYPESCRIPT",
+        difficulty: "MEDIUM",
+        durationSeconds: 60,
+      },
+      host.playerId,
+      host.room.code,
+    ),
+  );
+
+  const started = expectReadyStart(
+    startRace({ roomCode: host.room.code }, host.playerId, host.room.code),
+  );
+
+  assert.equal(started.room.settings.durationSeconds, 60);
+  assert.equal(started.endsAt - started.startsAt, 60_000);
 });
 
 test("deadline results rank submissions before alphabetical timeouts and stay immutable", async () => {
@@ -302,6 +622,7 @@ test("deadline results rank submissions before alphabetical timeouts and stay im
   assert.equal(finalization.result.leaderboard[1]?.score.finalScore, 0);
   assert.equal(Object.isFrozen(finalization.result), true);
   assert.equal(Object.isFrozen(finalization.result.leaderboard), true);
+  assert.deepEqual(finalization.result.settings, started.room.settings);
 
   const repeated = advanceRaceState(host.room.code, started.endsAt + 1);
 
@@ -420,6 +741,67 @@ test("race stays FINALIZING until every accepted evaluation completes", async ()
   const finished = advanceRaceState(host.room.code, started.endsAt + 10_000);
   assert.equal(finished?.room.status, "FINISHED");
   assert.ok(finished?.result);
+});
+
+test("non-retryable evaluation failure becomes terminal and cannot deadlock results", () => {
+  const { host, guest, started } = createActiveRace(
+    "Failure Host",
+    "Failure Guest",
+    "evaluation-failure",
+  );
+  const hostReservation = expectSuccess(
+    reserveSubmission(
+      validPayload(host.room.code),
+      host.playerId,
+      host.room.code,
+      started.startsAt,
+    ),
+  );
+  const guestReservation = expectSuccess(
+    reserveSubmission(
+      validPayload(host.room.code),
+      guest.playerId,
+      host.room.code,
+      started.startsAt + 100,
+    ),
+  );
+
+  const finalizing = advanceRaceState(host.room.code, started.startsAt + 100);
+  assert.equal(finalizing?.room.status, "FINALIZING");
+
+  const hostCompletion = completeSubmissionEvaluation(
+    host.room.code,
+    host.playerId,
+    hostReservation.submissionId,
+    semanticEvaluation(35, 35, 20),
+    started.startsAt + 200,
+  );
+  assert.ok(hostCompletion);
+
+  const failure = failSubmissionEvaluation(
+    host.room.code,
+    guest.playerId,
+    guestReservation.submissionId,
+    started.startsAt + 300,
+  );
+
+  assert.equal(failure?.retryAllowed, false);
+  assert.equal(
+    failure?.room.players.find((player) => player.id === guest.playerId)
+      ?.status,
+    "SUBMITTED",
+  );
+
+  const finished = advanceRaceState(host.room.code, started.startsAt + 300);
+  const failedEntry = finished?.result?.leaderboard.find(
+    (entry) => entry.playerId === guest.playerId,
+  );
+
+  assert.equal(finished?.room.status, "FINISHED");
+  assert.equal(failedEntry?.outcome, "EVALUATION_FAILED");
+  assert.equal(failedEntry?.correct, null);
+  assert.equal(failedEntry?.score.finalScore, 0);
+  assert.equal(failedEntry?.evaluation, null);
 });
 
 test("race:finished is emitted once across repeated advancement", async () => {

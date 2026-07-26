@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { AckResult, RaceStartedPayload } from "@bugrace/shared";
+import type {
+  AckResult,
+  PublicRoomSettings,
+  PublicRoomState,
+  RaceStartedPayload,
+} from "@bugrace/shared";
 
 import type { GeneratedChallenge } from "../game/challenge-data.js";
 import type { ChallengeGenerator } from "../game/challenge-generator.js";
@@ -15,6 +20,16 @@ import {
 type RaceStartHandler = (
   payload: { roomCode: string; generateChallenge?: boolean },
   acknowledge: (response: AckResult<{ accepted: true }>) => void,
+) => void;
+
+type RoomSettingsHandler = (
+  payload: {
+    roomCode: string;
+    language: "JAVASCRIPT" | "TYPESCRIPT" | "CPP" | "JAVA" | "PYTHON";
+    difficulty: "EASY" | "MEDIUM" | "HARD";
+    durationSeconds: 60 | 120 | 180 | 300;
+  },
+  acknowledge: (response: AckResult<PublicRoomState>) => void,
 ) => void;
 
 interface EmittedEvent {
@@ -35,8 +50,7 @@ function generatedChallenge(): GeneratedChallenge {
       title: "Overlapping Balance Updates",
       scenario:
         "Two account adjustments overlap and one completed change disappears.",
-      language: "typescript",
-      topic: "CONCURRENCY",
+      language: "TYPESCRIPT",
       difficulty: "MEDIUM",
       buggyCode:
         "const account = await read(id);\nawait write(id, account.balance + delta);",
@@ -98,20 +112,60 @@ function setupSocketTest(generator: ChallengeGenerator) {
   );
 
   const start = handlers.get("race:start") as RaceStartHandler | undefined;
+  const updateSettings = handlers.get("room:update-settings") as
+    RoomSettingsHandler | undefined;
   assert.ok(start);
+  assert.ok(updateSettings);
 
-  return { emitted, host, start };
+  return { emitted, host, start, updateSettings };
 }
+
+test("settings update is acknowledged and broadcast room-wide", () => {
+  const generator: ChallengeGenerator = {
+    async generate() {
+      return generatedChallenge();
+    },
+  };
+  const { emitted, host, updateSettings } = setupSocketTest(generator);
+  let acknowledgement: AckResult<PublicRoomState> | undefined;
+
+  updateSettings(
+    {
+      roomCode: host.room.code,
+      language: "CPP",
+      difficulty: "HARD",
+      durationSeconds: 300,
+    },
+    (response) => {
+      acknowledgement = response;
+    },
+  );
+
+  assert.equal(acknowledgement?.ok, true);
+  if (acknowledgement?.ok) {
+    assert.deepEqual(acknowledgement.data.settings, {
+      language: "CPP",
+      difficulty: "HARD",
+      durationSeconds: 300,
+    });
+  }
+  assert.equal(
+    emitted.filter((entry) => entry.event === "room:state").length,
+    1,
+  );
+});
 
 test("duplicate socket start makes one generation call and one room-wide public broadcast", async () => {
   let generationCalls = 0;
+  let generationSettings: PublicRoomSettings | undefined;
   let resolveGeneration: ((challenge: GeneratedChallenge) => void) | undefined;
   const pendingGeneration = new Promise<GeneratedChallenge>((resolve) => {
     resolveGeneration = resolve;
   });
   const generator: ChallengeGenerator = {
-    generate() {
+    generate(settings) {
       generationCalls += 1;
+      generationSettings = settings;
       return pendingGeneration;
     },
   };
@@ -123,6 +177,7 @@ test("duplicate socket start makes one generation call and one room-wide public 
   start(payload, (response) => acknowledgements.push(response));
 
   assert.equal(generationCalls, 1);
+  assert.deepEqual(generationSettings, host.room.settings);
   assert.equal(acknowledgements[0]?.ok, true);
   assert.equal(acknowledgements[1]?.ok, false);
 

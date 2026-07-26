@@ -5,6 +5,10 @@ import { RaceResults } from "@/app/race-results";
 interface ResultsScreenProps {
   finalResult: FinalRaceResult | null;
   onNewRace: () => void;
+  ownSubmission: {
+    explanation: string;
+    proposedFix: string;
+  } | null;
   playerId: string | null;
   race: RaceStartedPayload | null;
 }
@@ -12,6 +16,7 @@ interface ResultsScreenProps {
 export function ResultsScreen({
   finalResult,
   onNewRace,
+  ownSubmission,
   playerId,
   race,
 }: ResultsScreenProps) {
@@ -35,6 +40,7 @@ export function ResultsScreen({
     <section className="game-panel p-6 sm:p-8">
       <RaceResults
         challenge={race.challenge}
+        ownSubmission={ownSubmission}
         playerId={playerId}
         result={finalResult}
       />

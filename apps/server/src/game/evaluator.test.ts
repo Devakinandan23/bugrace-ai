@@ -13,7 +13,8 @@ const evaluationInput: EvaluationInput = {
   challenge: {
     title: "The Array of Promises",
     scenario: "Load users",
-    language: "typescript",
+    language: "TYPESCRIPT",
+    difficulty: "MEDIUM",
     buggyCode: "ids.map(async (id) => fetchUser(id))",
   },
   rubric: {
@@ -63,7 +64,7 @@ test("OpenAI evaluator makes one Responses call with structured output and no st
   const body = request as {
     store?: boolean;
     tools?: unknown;
-    input?: Array<{ role?: string }>;
+    input?: Array<{ role?: string; content?: string }>;
     text?: { format?: unknown };
   };
 
@@ -76,6 +77,76 @@ test("OpenAI evaluator makes one Responses call with structured output and no st
     ["system", "user"],
   );
   assert.ok(body.text?.format);
+  assert.match(
+    body.input?.[0]?.content ?? "",
+    /repeats or only reformats the supplied buggy code must receive 0 fix points/,
+  );
+});
+
+test("copied buggy code receives zero fix points despite the model score", async () => {
+  const evaluator = new OpenAISubmissionEvaluator(
+    fakeOpenAI(async () => ({
+      status: "completed",
+      output: [],
+      output_parsed: {
+        confidence: 0.93,
+        rootCauseScore: 20,
+        fixScore: 35,
+        reasoningScore: 10,
+        feedback: "The proposed loop matches the intended fix.",
+        detectedConcepts: ["broadcasting events"],
+        missingConcepts: ["conditional logic flow"],
+      },
+    })),
+    "test-model",
+  );
+  const result = await evaluator.evaluate({
+    ...evaluationInput,
+    submission: {
+      explanation: "The condition is checked after the state changes.",
+      proposedFix: `\`\`\`typescript
+        ids.map(async (id) => fetchUser(id))
+      \`\`\``,
+    },
+  });
+
+  assert.equal(result.fixScore, 0);
+  assert.match(result.feedback, /repeats the buggy implementation/);
+  assert.equal(
+    result.missingConcepts.includes(
+      "a changed implementation that fixes the defect",
+    ),
+    true,
+  );
+});
+
+test("known invalid fix receives zero fix points despite the model score", async () => {
+  const evaluator = new OpenAISubmissionEvaluator(
+    fakeOpenAI(async () => ({
+      status: "completed",
+      output: [],
+      output_parsed: {
+        confidence: 0.9,
+        rootCauseScore: 35,
+        fixScore: 35,
+        reasoningScore: 20,
+        feedback: "Correct cause and fix.",
+        detectedConcepts: ["array of promises"],
+        missingConcepts: [],
+      },
+    })),
+    "test-model",
+  );
+  const result = await evaluator.evaluate({
+    ...evaluationInput,
+    submission: {
+      explanation: "The async map returns an array of promises.",
+      proposedFix: "Await the array returned by map.",
+    },
+  });
+
+  assert.equal(result.fixScore, 0);
+  assert.match(result.feedback, /known invalid approach/);
 });
 
 function evaluatorWithFallback(parse: () => Promise<unknown>) {

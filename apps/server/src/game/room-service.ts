@@ -5,7 +5,9 @@ import type {
   FinalRaceResult,
   PlayerStatus,
   PublicChallenge,
+  PublicRoomSettings,
   PublicRoomState,
+  RaceDurationSeconds,
   RaceFinishReason,
   RoomMembershipData,
   RoomStatus,
@@ -16,7 +18,7 @@ import type {
 import { z } from "zod";
 
 import { env } from "../config/env.js";
-import { curatedChallenge, type StoredChallenge } from "./challenge-data.js";
+import { getCuratedChallenge, type StoredChallenge } from "./challenge-data.js";
 import { semanticEvaluationSchema } from "./evaluation-schema.js";
 import type { EvaluationInput, SemanticEvaluation } from "./evaluator.js";
 import {
@@ -47,6 +49,7 @@ interface Submission {
   evaluationStartedAt?: number;
   evaluationCompletedAt?: number;
   evaluation?: SemanticEvaluation;
+  evaluationFailed?: true;
   correct?: boolean;
   score?: ScoreBreakdown;
 }
@@ -55,6 +58,7 @@ interface Room {
   code: string;
   status: RoomStatus;
   hostPlayerId: string;
+  settings: PublicRoomSettings;
   players: Map<string, Player>;
   submissions: Map<string, Submission>;
   challenge?: StoredChallenge;
@@ -154,6 +158,32 @@ const startRacePayloadSchema = z
   })
   .strict();
 
+const challengeLanguageSchema = z.enum([
+  "JAVASCRIPT",
+  "TYPESCRIPT",
+  "CPP",
+  "JAVA",
+  "PYTHON",
+]);
+
+const challengeDifficultySchema = z.enum(["EASY", "MEDIUM", "HARD"]);
+
+const raceDurationSecondsSchema = z.union([
+  z.literal(60),
+  z.literal(120),
+  z.literal(180),
+  z.literal(300),
+]);
+
+const updateRoomSettingsPayloadSchema = z
+  .object({
+    roomCode: roomCodeSchema,
+    language: challengeLanguageSchema,
+    difficulty: challengeDifficultySchema,
+    durationSeconds: raceDurationSecondsSchema,
+  })
+  .strict();
+
 function hasDisallowedControlCharacter(value: string): boolean {
   return [...value].some((character) => {
     const codePoint = character.codePointAt(0);
@@ -185,6 +215,14 @@ const submissionPayloadSchema = z
   .strict();
 
 const rooms = new Map<string, Room>();
+
+function defaultRaceDurationSeconds(): RaceDurationSeconds {
+  const parsedDuration = raceDurationSecondsSchema.safeParse(
+    env.RACE_DURATION_MS / 1_000,
+  );
+
+  return parsedDuration.success ? parsedDuration.data : 120;
+}
 
 function failure<T>(code: string, message: string): AckResult<T> {
   return {
@@ -223,6 +261,7 @@ export function toPublicRoomState(room: Room): PublicRoomState {
     code: room.code,
     status: room.status,
     hostPlayerId: room.hostPlayerId,
+    settings: { ...room.settings },
     players: [...room.players.values()].map((player) => ({
       id: player.id,
       username: player.username,
@@ -261,6 +300,11 @@ export function createRoom(
     code: generateRoomCode(),
     status: "WAITING",
     hostPlayerId: player.id,
+    settings: {
+      language: "TYPESCRIPT",
+      difficulty: "MEDIUM",
+      durationSeconds: defaultRaceDurationSeconds(),
+    },
     players: new Map([[player.id, player]]),
     submissions: new Map(),
     createdAt: now,
@@ -345,6 +389,81 @@ export function joinRoom(
   };
 }
 
+export function updateRoomSettings(
+  payload: unknown,
+  playerId: string | undefined,
+  socketRoomCode: string | undefined,
+): AckResult<PublicRoomState> {
+  const parsedPayload = updateRoomSettingsPayloadSchema.safeParse(payload);
+
+  if (!parsedPayload.success) {
+    const invalidLanguage = parsedPayload.error.issues.some(
+      (issue) => issue.path[0] === "language",
+    );
+    const invalidDifficulty = parsedPayload.error.issues.some(
+      (issue) => issue.path[0] === "difficulty",
+    );
+    const invalidDuration = parsedPayload.error.issues.some(
+      (issue) => issue.path[0] === "durationSeconds",
+    );
+
+    if (invalidLanguage) {
+      return failure("INVALID_LANGUAGE", "Unsupported challenge language.");
+    }
+
+    if (invalidDifficulty) {
+      return failure("INVALID_DIFFICULTY", "Unsupported challenge difficulty.");
+    }
+
+    if (invalidDuration) {
+      return failure(
+        "INVALID_DURATION",
+        "Unsupported race duration. Choose 1, 2, 3, or 5 minutes.",
+      );
+    }
+
+    return failure("ROOM_NOT_FOUND", "Room not found.");
+  }
+
+  const room = rooms.get(parsedPayload.data.roomCode);
+
+  if (!room) {
+    return failure("ROOM_NOT_FOUND", "Room not found.");
+  }
+
+  if (
+    !playerId ||
+    !socketRoomCode ||
+    socketRoomCode !== room.code ||
+    !room.players.has(playerId)
+  ) {
+    return failure(
+      "PLAYER_NOT_IN_ROOM",
+      "This player does not belong to the room.",
+    );
+  }
+
+  if (room.hostPlayerId !== playerId) {
+    return failure("HOST_ONLY", "Only the host can update room settings.");
+  }
+
+  if (room.status !== "WAITING") {
+    return failure(
+      "ROOM_NOT_CONFIGURABLE",
+      "Room settings cannot change after race preparation begins.",
+    );
+  }
+
+  room.settings = {
+    language: parsedPayload.data.language,
+    difficulty: parsedPayload.data.difficulty,
+    durationSeconds: parsedPayload.data.durationSeconds,
+  };
+  room.updatedAt = Date.now();
+
+  return { ok: true, data: toPublicRoomState(room) };
+}
+
 export function startRace(
   payload: unknown,
   playerId: string | undefined,
@@ -409,7 +528,7 @@ export function startRace(
     };
   }
 
-  const readyRace = beginCountdown(room, curatedChallenge);
+  const readyRace = beginCountdown(room, getCuratedChallenge(room.settings));
 
   return { ok: true, data: readyRace };
 }
@@ -440,7 +559,7 @@ function beginCountdown(
   const storedChallenge = storeChallenge(room, challenge);
 
   const startsAt = Date.now() + 3_000;
-  const endsAt = startsAt + env.RACE_DURATION_MS;
+  const endsAt = startsAt + room.settings.durationSeconds * 1_000;
 
   room.status = "COUNTDOWN";
   room.startsAt = startsAt;
@@ -466,7 +585,26 @@ export function completeRacePreparation(
     return null;
   }
 
+  if (
+    challenge.public.language !== room.settings.language ||
+    challenge.public.difficulty !== room.settings.difficulty
+  ) {
+    return null;
+  }
+
   return beginCountdown(room, challenge);
+}
+
+export function recoverRacePreparationWithCuratedChallenge(
+  roomCode: string,
+): ReadyRaceStartData | null {
+  const room = rooms.get(roomCode);
+
+  if (!room || room.status !== "PREPARING") {
+    return null;
+  }
+
+  return beginCountdown(room, getCuratedChallenge(room.settings));
 }
 
 export function activateRace(
@@ -610,7 +748,8 @@ export function reserveSubmission(
         challenge: {
           title: challenge.public.title,
           scenario: challenge.public.scenario,
-          language: challenge.public.language,
+          language: room.settings.language,
+          difficulty: room.settings.difficulty,
           buggyCode: challenge.public.buggyCode,
         },
         rubric: {
@@ -741,6 +880,14 @@ export function failSubmissionEvaluation(
     room.submissions.delete(playerId);
     player.status = "SOLVING";
     room.updatedAt = failedAt;
+  } else {
+    submission.evaluationFailed = true;
+    submission.score = createZeroScore();
+    submission.evaluationCompletedAt = failedAt;
+    if (player) {
+      player.status = "SUBMITTED";
+    }
+    room.updatedAt = failedAt;
   }
 
   return {
@@ -794,9 +941,10 @@ function canFinalizeResults(room: Room): boolean {
   );
   const submissionsAreTerminal = [...room.submissions.values()].every(
     (submission) =>
-      submission.evaluation !== undefined &&
-      submission.correct !== undefined &&
-      submission.score !== undefined,
+      submission.evaluationFailed === true ||
+      (submission.evaluation !== undefined &&
+        submission.correct !== undefined &&
+        submission.score !== undefined),
   );
 
   return playersAreTerminal && submissionsAreTerminal;
@@ -909,8 +1057,12 @@ export function advanceRaceState(
       playerId: submission.playerId,
       username: submission.username,
       isHost: submission.isHost,
-      outcome: "SUBMITTED" as const,
-      correct: submission.correct ?? false,
+      outcome: submission.evaluationFailed
+        ? ("EVALUATION_FAILED" as const)
+        : ("SUBMITTED" as const),
+      correct: submission.evaluationFailed
+        ? null
+        : (submission.correct ?? false),
       acceptedAt: submission.acceptedAt,
       elapsedMs: Math.max(0, submission.acceptedAt - startsAt),
       score: submission.score ?? createZeroScore(),
@@ -950,6 +1102,7 @@ export function advanceRaceState(
   const result: FinalRaceResult = {
     roomCode: room.code,
     challengeId: challenge.public.id,
+    settings: { ...room.settings },
     startsAt,
     endsAt,
     finishedAt: now,

@@ -72,6 +72,7 @@ for (const fixture of fixtures) {
       title: publicChallenge.title,
       scenario: publicChallenge.scenario,
       language: publicChallenge.language,
+      difficulty: publicChallenge.difficulty,
       buggyCode: publicChallenge.buggyCode,
     },
     rubric: {

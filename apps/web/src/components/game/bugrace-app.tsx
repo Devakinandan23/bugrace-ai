@@ -3,6 +3,7 @@
 import type {
   ChallengeFallbackPayload,
   FinalRaceResult,
+  PublicRoomSettings,
   PublicRoomState,
   RaceStartedPayload,
   SubmissionEvaluatedPayload,
@@ -23,7 +24,7 @@ import { LobbyScreen } from "./lobby-screen";
 import { RaceScreen } from "./race-screen";
 import { ResultsScreen } from "./results-screen";
 
-type PendingAction = "create" | "join" | "start" | "submit";
+type PendingAction = "create" | "join" | "settings" | "start" | "submit";
 type GameScreen = "HOME" | "LOBBY" | "RACE" | "RESULTS";
 
 const acknowledgementTimeoutMs = 5_000;
@@ -477,6 +478,48 @@ export function BugRaceApp() {
     );
   };
 
+  const updateRoomSettings = (settings: PublicRoomSettings) => {
+    if (
+      !room ||
+      room.status !== "WAITING" ||
+      !requireConnectedSocket() ||
+      (settings.language === room.settings.language &&
+        settings.difficulty === room.settings.difficulty &&
+        settings.durationSeconds === room.settings.durationSeconds)
+    ) {
+      return;
+    }
+
+    const complete = beginAcknowledgedAction("settings");
+
+    if (!complete) {
+      return;
+    }
+
+    socket.emit(
+      "room:update-settings",
+      {
+        roomCode: room.code,
+        language: settings.language,
+        difficulty: settings.difficulty,
+        durationSeconds: settings.durationSeconds,
+      },
+      (response) => {
+        if (!complete()) {
+          return;
+        }
+
+        if (!response.ok) {
+          setActionError(response.error.message);
+          return;
+        }
+
+        setRoom(response.data);
+        setActionError(null);
+      },
+    );
+  };
+
   const submitAnswer = () => {
     if (!room || !race || !requireConnectedSocket()) {
       return;
@@ -611,8 +654,9 @@ export function BugRaceApp() {
   const currentPlayer = room?.players.find((player) => player.id === playerId);
   const hasSubmitted = currentPlayer?.status === "SUBMITTED";
   const isEvaluating =
-    currentPlayer?.status === "EVALUATING" ||
-    (acceptedSubmissionId !== null && ownEvaluation === null);
+    !hasSubmitted &&
+    (currentPlayer?.status === "EVALUATING" ||
+      (acceptedSubmissionId !== null && ownEvaluation === null));
   const hasTimedOut = currentPlayer?.status === "TIME_EXPIRED";
   const deadlinePassed =
     race !== null && serverClock > 0 && serverClock >= race.endsAt;
@@ -741,6 +785,8 @@ export function BugRaceApp() {
             onCopyRoomCode={copyRoomCode}
             onRequestAiChallengeChange={setRequestAiChallenge}
             onStartRace={startRace}
+            onUpdateSettings={updateRoomSettings}
+            pendingSettings={pendingAction === "settings"}
             pendingStart={pendingAction === "start"}
             playerId={playerId}
             requestAiChallenge={requestAiChallenge}
@@ -785,6 +831,14 @@ export function BugRaceApp() {
           <ResultsScreen
             finalResult={finalResult}
             onNewRace={startNewRace}
+            ownSubmission={
+              acceptedSubmissionId
+                ? {
+                    explanation,
+                    proposedFix,
+                  }
+                : null
+            }
             playerId={playerId}
             race={race}
           />

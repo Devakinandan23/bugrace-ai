@@ -1,4 +1,8 @@
-import type { EvaluationSource } from "@bugrace/shared";
+import type {
+  ChallengeDifficulty,
+  ChallengeLanguage,
+  EvaluationSource,
+} from "@bugrace/shared";
 
 export type RootCauseScore = 0 | 10 | 20 | 35;
 export type FixScore = 0 | 10 | 20 | 35;
@@ -19,7 +23,8 @@ export interface EvaluationInput {
   challenge: {
     title: string;
     scenario: string;
-    language: string;
+    language: ChallengeLanguage;
+    difficulty: ChallengeDifficulty;
     buggyCode: string;
   };
   rubric: {

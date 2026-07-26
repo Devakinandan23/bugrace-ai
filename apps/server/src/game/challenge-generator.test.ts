@@ -12,13 +12,18 @@ import {
   type ChallengeGenerator,
 } from "./challenge-generator.js";
 
+const settings = {
+  language: "TYPESCRIPT",
+  difficulty: "MEDIUM",
+  durationSeconds: 120,
+} as const;
+
 function validOutput() {
   return {
     title: "Overlapping Balance Updates",
     scenario:
       "Two requests adjust one account balance at nearly the same time, but one completed adjustment disappears.",
-    language: "typescript" as const,
-    topic: "CONCURRENCY" as const,
+    language: "TYPESCRIPT" as const,
     difficulty: "MEDIUM" as const,
     buggyCode: `async function adjustBalance(id: string, delta: number) {
   const account = await db.account.findUnique({ where: { id } });
@@ -40,6 +45,28 @@ function validOutput() {
   };
 }
 
+function validPythonOutput() {
+  return {
+    ...validOutput(),
+    title: "Delayed Profile Loading",
+    scenario:
+      "A profile endpoint returns items that cannot be serialized even though every lookup function is asynchronous.",
+    language: "PYTHON" as const,
+    buggyCode: `async def load_profiles(ids):
+    profiles = [fetch_profile(profile_id) for profile_id in ids]
+    return profiles`,
+    rootCause:
+      "Calling fetch_profile without awaiting it creates coroutine objects, so the returned list does not contain resolved profiles.",
+    referenceFix:
+      "Use await asyncio.gather over the fetch_profile calls and return the resulting profile values.",
+    requiredConcepts: ["coroutine objects", "asyncio gather"],
+    acceptedAlternatives: [
+      "Await each fetch_profile call in a loop when sequential loading is acceptable.",
+    ],
+    invalidFixes: ["Await the list after the comprehension has completed."],
+  };
+}
+
 function fakeOpenAI(
   parse: (body?: unknown, options?: unknown) => Promise<unknown>,
 ): OpenAI {
@@ -47,12 +74,23 @@ function fakeOpenAI(
 }
 
 test("valid generated challenge is accepted with an application-owned ID", () => {
-  const challenge = validateGeneratedChallenge(validOutput());
+  const challenge = validateGeneratedChallenge(validOutput(), settings);
 
   assert.match(challenge.public.id, /^ai-/);
   assert.equal(challenge.public.source, "AI_GENERATED");
   assert.equal(challenge.public.title, validOutput().title);
   assert.equal(challenge.private.rootCause, validOutput().rootCause);
+});
+
+test("valid Python generated challenge is accepted", () => {
+  const pythonSettings = { ...settings, language: "PYTHON" } as const;
+  const challenge = validateGeneratedChallenge(
+    validPythonOutput(),
+    pythonSettings,
+  );
+
+  assert.equal(challenge.public.language, "PYTHON");
+  assert.equal(challenge.public.source, "AI_GENERATED");
 });
 
 test("generated challenge with more than 25 non-empty lines is rejected", () => {
@@ -65,7 +103,7 @@ test("generated challenge with more than 25 non-empty lines is rejected", () => 
   };
 
   assert.throws(
-    () => validateGeneratedChallenge(output),
+    () => validateGeneratedChallenge(output, settings),
     ChallengeGenerationError,
   );
 });
@@ -74,7 +112,7 @@ test("generated challenge without a root cause is rejected", () => {
   const withoutRootCause = { ...validOutput(), rootCause: undefined };
 
   assert.throws(
-    () => validateGeneratedChallenge(withoutRootCause),
+    () => validateGeneratedChallenge(withoutRootCause, settings),
     ChallengeGenerationError,
   );
 });
@@ -87,7 +125,7 @@ test("generated challenge containing dangerous code is rejected", () => {
   };
 
   assert.throws(
-    () => validateGeneratedChallenge(output),
+    () => validateGeneratedChallenge(output, settings),
     ChallengeGenerationError,
   );
 });
@@ -97,7 +135,7 @@ test("recent duplicate challenge is rejected", () => {
   const recent = new Set([challengeFingerprint(output)]);
 
   assert.throws(
-    () => validateGeneratedChallenge(output, recent),
+    () => validateGeneratedChallenge(output, settings, recent),
     ChallengeGenerationError,
   );
 });
@@ -109,7 +147,7 @@ test("duplicate required concepts are rejected after normalization", () => {
   };
 
   assert.throws(
-    () => validateGeneratedChallenge(output),
+    () => validateGeneratedChallenge(output, settings),
     ChallengeGenerationError,
   );
 });
@@ -121,7 +159,7 @@ test("public fields that reveal a required concept are rejected", () => {
   };
 
   assert.throws(
-    () => validateGeneratedChallenge(output),
+    () => validateGeneratedChallenge(output, settings),
     ChallengeGenerationError,
   );
 });
@@ -133,7 +171,29 @@ test("mixed public/private model shape is rejected", () => {
   };
 
   assert.throws(
-    () => validateGeneratedChallenge(output),
+    () => validateGeneratedChallenge(output, settings),
+    ChallengeGenerationError,
+  );
+});
+
+test("generated challenge must match the requested language", () => {
+  assert.throws(
+    () =>
+      validateGeneratedChallenge(
+        { ...validOutput(), language: "JAVA" },
+        settings,
+      ),
+    ChallengeGenerationError,
+  );
+});
+
+test("generated challenge must match the requested difficulty", () => {
+  assert.throws(
+    () =>
+      validateGeneratedChallenge(
+        { ...validOutput(), difficulty: "HARD" },
+        settings,
+      ),
     ChallengeGenerationError,
   );
 });
@@ -157,7 +217,7 @@ test("OpenAI generator uses one structured Responses call without tools or stora
     15_000,
   );
 
-  const challenge = await generator.generate();
+  const challenge = await generator.generate(settings);
   const body = request as {
     store?: boolean;
     tools?: unknown;
@@ -171,7 +231,7 @@ test("OpenAI generator uses one structured Responses call without tools or stora
   assert.equal(body.tools, undefined);
   assert.deepEqual(
     body.input?.map((item) => item.role),
-    ["system"],
+    ["system", "user"],
   );
   assert.ok(body.text?.format);
   assert.deepEqual(requestOptions, { timeout: 15_000, maxRetries: 0 });
@@ -188,8 +248,11 @@ test("generator rejects the same recent model output on a later call", async () 
     15_000,
   );
 
-  await generator.generate();
-  await assert.rejects(() => generator.generate(), ChallengeGenerationError);
+  await generator.generate(settings);
+  await assert.rejects(
+    () => generator.generate(settings),
+    ChallengeGenerationError,
+  );
 });
 
 test("generation failure selects the curated fallback", async () => {
@@ -199,10 +262,33 @@ test("generation failure selects the curated fallback", async () => {
     },
   };
 
-  const result = await generateChallengeOrFallback(generator);
+  const result = await generateChallengeOrFallback(generator, {
+    language: "JAVA",
+    difficulty: "HARD",
+    durationSeconds: 120,
+  });
 
   assert.equal(result.fallbackUsed, true);
   assert.equal(result.challenge.public.source, "CURATED");
+  assert.equal(result.challenge.public.language, "JAVA");
+  assert.equal(result.challenge.public.difficulty, "HARD");
+});
+
+test("mismatched generated settings select the requested curated fallback", async () => {
+  const generator: ChallengeGenerator = {
+    async generate() {
+      return validateGeneratedChallenge(validOutput(), settings);
+    },
+  };
+  const result = await generateChallengeOrFallback(generator, {
+    language: "JAVA",
+    difficulty: "HARD",
+    durationSeconds: 120,
+  });
+
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.challenge.public.language, "JAVA");
+  assert.equal(result.challenge.public.difficulty, "HARD");
 });
 
 test("generated code is validated as text and never executed", () => {
@@ -215,7 +301,7 @@ test("generated code is validated as text and never executed", () => {
 }`,
   };
 
-  validateGeneratedChallenge(output);
+  validateGeneratedChallenge(output, settings);
 
   assert.equal((globalThis as Record<string, unknown>)[marker], undefined);
 });

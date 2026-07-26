@@ -1,11 +1,24 @@
+"use client";
+
 import type {
   FinalRaceResult,
   LeaderboardEntry,
   PublicChallenge,
 } from "@bugrace/shared";
+import { useEffect, useRef, useState } from "react";
+
+import {
+  difficultyLabels,
+  durationLabels,
+  languageLabels,
+} from "@/components/game/challenge-labels";
 
 interface RaceResultsProps {
   challenge: PublicChallenge;
+  ownSubmission: {
+    explanation: string;
+    proposedFix: string;
+  } | null;
   playerId: string | null;
   result: FinalRaceResult;
 }
@@ -59,16 +72,20 @@ function ParticipantBreakdown({
             className={`font-semibold ${
               entry.outcome === "TIME_EXPIRED"
                 ? "text-amber-300"
-                : entry.correct
-                  ? "text-emerald-300"
-                  : "text-rose-300"
+                : entry.outcome === "EVALUATION_FAILED"
+                  ? "text-rose-300"
+                  : entry.correct
+                    ? "text-emerald-300"
+                    : "text-rose-300"
             }`}
           >
             {entry.outcome === "TIME_EXPIRED"
               ? "Did not submit"
-              : entry.correct
-                ? "Correct"
-                : "Incorrect"}
+              : entry.outcome === "EVALUATION_FAILED"
+                ? "Evaluation failed"
+                : entry.correct
+                  ? "Correct"
+                  : "Incorrect"}
           </p>
           <p className="mt-1 text-2xl font-bold text-cyan-300">
             {score.finalScore} / {score.maximumScore}
@@ -80,6 +97,11 @@ function ParticipantBreakdown({
         <p className="mt-5 rounded-lg bg-slate-900 px-4 py-3 text-sm text-slate-400">
           No submission was accepted before the server deadline. No evaluator
           result is available.
+        </p>
+      ) : entry.outcome === "EVALUATION_FAILED" ? (
+        <p className="mt-5 rounded-lg bg-rose-950 px-4 py-3 text-sm text-rose-300">
+          The answer was accepted, but evaluation could not complete. The zero
+          score represents an infrastructure failure, not an incorrect answer.
         </p>
       ) : (
         <>
@@ -174,17 +196,51 @@ function ParticipantBreakdown({
   );
 }
 
-export function RaceResults({ challenge, playerId, result }: RaceResultsProps) {
+export function RaceResults({
+  challenge,
+  ownSubmission,
+  playerId,
+  result,
+}: RaceResultsProps) {
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const reviewButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const submittedCount = result.leaderboard.filter(
     (entry) => entry.outcome === "SUBMITTED",
   ).length;
   const correctCount = result.leaderboard.filter(
     (entry) => entry.correct === true,
   ).length;
-  const timedOutCount = result.leaderboard.length - submittedCount;
+  const failedCount = result.leaderboard.filter(
+    (entry) => entry.outcome === "EVALUATION_FAILED",
+  ).length;
+  const timedOutCount = result.leaderboard.filter(
+    (entry) => entry.outcome === "TIME_EXPIRED",
+  ).length;
   const ownEntry = result.leaderboard.find(
     (entry) => entry.playerId === playerId,
   );
+
+  useEffect(() => {
+    if (!reviewOpen) {
+      return;
+    }
+
+    const reviewButton = reviewButtonRef.current;
+    closeButtonRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setReviewOpen(false);
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      reviewButton?.focus();
+    };
+  }, [reviewOpen]);
 
   return (
     <section className="results-celebration mt-8 border-t border-slate-800 pt-8">
@@ -199,8 +255,19 @@ export function RaceResults({ challenge, playerId, result }: RaceResultsProps) {
         {" · "}
         {new Date(result.finishedAt).toISOString()}
       </p>
+      <dl className="mt-4 flex flex-wrap gap-2 text-sm">
+        <div className="rounded-full bg-cyan-950 px-3 py-1.5">
+          Language: {languageLabels[result.settings.language]}
+        </div>
+        <div className="rounded-full bg-amber-950 px-3 py-1.5">
+          Difficulty: {difficultyLabels[result.settings.difficulty]}
+        </div>
+        <div className="rounded-full bg-emerald-950 px-3 py-1.5">
+          Race time: {durationLabels[result.settings.durationSeconds]}
+        </div>
+      </dl>
 
-      <dl className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <dl className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
         <div className="game-tile rounded-xl bg-slate-950 p-4">
           <dt className="text-sm text-slate-500">Participants</dt>
           <dd className="mt-1 text-2xl font-bold">
@@ -218,6 +285,10 @@ export function RaceResults({ challenge, playerId, result }: RaceResultsProps) {
         <div className="game-tile rounded-xl bg-slate-950 p-4">
           <dt className="text-sm text-slate-500">Timed out</dt>
           <dd className="mt-1 text-2xl font-bold">{timedOutCount}</dd>
+        </div>
+        <div className="game-tile rounded-xl bg-slate-950 p-4">
+          <dt className="text-sm text-slate-500">Evaluation failed</dt>
+          <dd className="mt-1 text-2xl font-bold">{failedCount}</dd>
         </div>
         <div className="timer-card rounded-xl bg-slate-950 p-4">
           <dt className="text-sm text-slate-500">Your result</dt>
@@ -258,9 +329,11 @@ export function RaceResults({ challenge, playerId, result }: RaceResultsProps) {
                 <td className="px-3 py-4">
                   {entry.outcome === "TIME_EXPIRED"
                     ? "Did not submit"
-                    : entry.correct
-                      ? "Correct"
-                      : "Incorrect"}
+                    : entry.outcome === "EVALUATION_FAILED"
+                      ? "Evaluation failed"
+                      : entry.correct
+                        ? "Correct"
+                        : "Incorrect"}
                 </td>
                 <td className="px-3 py-4">
                   {entry.score.semanticSubtotal} / 90
@@ -293,10 +366,22 @@ export function RaceResults({ challenge, playerId, result }: RaceResultsProps) {
       </div>
 
       <div className="game-tile mt-9 rounded-xl border border-slate-700 bg-slate-950 p-5">
-        <h3 className="text-xl font-semibold">Reference solution</h3>
-        <p className="mt-2 text-sm text-slate-400">
-          Challenge: {challenge.title}
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h3 className="text-xl font-semibold">Reference solution</h3>
+            <p className="mt-2 text-sm text-slate-400">
+              Challenge: {challenge.title}
+            </p>
+          </div>
+          <button
+            ref={reviewButtonRef}
+            type="button"
+            onClick={() => setReviewOpen(true)}
+            className="game-secondary min-h-0! px-4 py-2 text-sm"
+          >
+            Review question &amp; your answer
+          </button>
+        </div>
         <dl className="mt-4 space-y-4 text-sm">
           <div>
             <dt className="text-slate-500">Root cause</dt>
@@ -325,6 +410,101 @@ export function RaceResults({ challenge, playerId, result }: RaceResultsProps) {
           </div>
         </dl>
       </div>
+
+      {reviewOpen ? (
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-black/60 p-4 backdrop-blur-sm sm:p-8"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setReviewOpen(false);
+            }
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="race-review-title"
+            className="mx-auto my-4 max-w-5xl rounded-[2rem] border-2 border-slate-900 bg-white p-5 shadow-2xl sm:p-7"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-300 pb-5">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">
+                  Post-race review
+                </p>
+                <h2
+                  id="race-review-title"
+                  className="mt-2 text-2xl font-bold text-slate-100"
+                >
+                  Question &amp; your answer
+                </h2>
+              </div>
+              <button
+                ref={closeButtonRef}
+                type="button"
+                onClick={() => setReviewOpen(false)}
+                aria-label="Close review"
+                className="game-secondary min-h-0! shrink-0 px-4 py-2 text-sm"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-6 grid gap-5 lg:grid-cols-2">
+              <article className="game-tile p-5">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-700">
+                  Question
+                </p>
+                <h3 className="mt-2 text-xl font-semibold text-slate-100">
+                  {challenge.title}
+                </h3>
+                <p className="mt-3 text-sm leading-6 text-slate-600">
+                  {challenge.scenario}
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full bg-cyan-100 px-3 py-1.5 font-semibold text-cyan-400">
+                    {languageLabels[challenge.language]}
+                  </span>
+                  <span className="rounded-full bg-amber-100 px-3 py-1.5 font-semibold text-amber-300">
+                    {difficultyLabels[challenge.difficulty]}
+                  </span>
+                </div>
+                <p className="mt-5 text-sm font-semibold text-slate-100">
+                  Buggy code
+                </p>
+                <pre className="code-arena mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words p-4 text-sm">
+                  <code>{challenge.buggyCode}</code>
+                </pre>
+              </article>
+
+              <article className="game-tile p-5">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">
+                  Your answer
+                </p>
+                {ownSubmission ? (
+                  <>
+                    <h3 className="mt-3 text-sm font-semibold text-slate-100">
+                      Explanation
+                    </h3>
+                    <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                      {ownSubmission.explanation}
+                    </p>
+                    <h3 className="mt-5 text-sm font-semibold text-slate-100">
+                      Proposed fix
+                    </h3>
+                    <pre className="code-arena mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words p-4 text-sm">
+                      <code>{ownSubmission.proposedFix}</code>
+                    </pre>
+                  </>
+                ) : (
+                  <p className="mt-3 rounded-2xl bg-white px-4 py-5 text-sm text-slate-600">
+                    No answer was submitted before this race finished.
+                  </p>
+                )}
+              </article>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }

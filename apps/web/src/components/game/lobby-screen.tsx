@@ -1,6 +1,27 @@
-import type { PublicRoomState } from "@bugrace/shared";
+import type {
+  ChallengeDifficulty,
+  ChallengeLanguage,
+  PublicRoomSettings,
+  PublicRoomState,
+  RaceDurationSeconds,
+} from "@bugrace/shared";
 
+import {
+  difficultyLabels,
+  durationLabels,
+  languageLabels,
+} from "./challenge-labels";
 import { PlayerList } from "./player-list";
+
+const languages: ChallengeLanguage[] = [
+  "JAVASCRIPT",
+  "TYPESCRIPT",
+  "CPP",
+  "JAVA",
+  "PYTHON",
+];
+const difficulties: ChallengeDifficulty[] = ["EASY", "MEDIUM", "HARD"];
+const durations: RaceDurationSeconds[] = [60, 120, 180, 300];
 
 interface LobbyScreenProps {
   actionError: string | null;
@@ -10,7 +31,9 @@ interface LobbyScreenProps {
   isHost: boolean;
   onCopyRoomCode: () => void;
   onRequestAiChallengeChange: (enabled: boolean) => void;
+  onUpdateSettings: (settings: PublicRoomSettings) => void;
   onStartRace: () => void;
+  pendingSettings: boolean;
   pendingStart: boolean;
   playerId: string | null;
   requestAiChallenge: boolean;
@@ -25,7 +48,9 @@ export function LobbyScreen({
   isHost,
   onCopyRoomCode,
   onRequestAiChallengeChange,
+  onUpdateSettings,
   onStartRace,
+  pendingSettings,
   pendingStart,
   playerId,
   requestAiChallenge,
@@ -66,7 +91,7 @@ export function LobbyScreen({
             </span>
           </div>
           <p className="mt-2 text-sm text-slate-500">
-            {room.players.length} player{room.players.length === 1 ? "" : "s"}
+            {room.players.length} player{room.players.length === 1 ? "" : "s"}{" "}
             connected · minimum 2 to start
           </p>
           <div className="mt-5">
@@ -78,7 +103,11 @@ export function LobbyScreen({
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-400">
             Challenge selection
           </p>
-          <h2 className="mt-2 text-xl font-semibold">Async JavaScript</h2>
+          <h2 className="mt-2 text-xl font-semibold">
+            {languageLabels[room.settings.language]} ·{" "}
+            {difficultyLabels[room.settings.difficulty]} ·{" "}
+            {durationLabels[room.settings.durationSeconds]}
+          </h2>
           <p className="mt-2 text-sm text-slate-500">
             {requestAiChallenge
               ? "AI-generated challenge with curated fallback"
@@ -87,6 +116,101 @@ export function LobbyScreen({
 
           {isHost ? (
             <>
+              <fieldset
+                className="mt-6"
+                disabled={preparing || pendingSettings}
+              >
+                <legend className="text-sm font-medium">Language</legend>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {languages.map((language) => (
+                    <button
+                      key={language}
+                      type="button"
+                      onClick={() =>
+                        onUpdateSettings({
+                          ...room.settings,
+                          language,
+                        })
+                      }
+                      aria-pressed={room.settings.language === language}
+                      className={`rounded-full border px-3 py-2 text-sm transition ${
+                        room.settings.language === language
+                          ? "border-cyan-500 bg-cyan-950 font-semibold text-cyan-300"
+                          : "border-slate-700 bg-white text-slate-500 hover:border-cyan-500"
+                      } disabled:cursor-not-allowed disabled:opacity-60`}
+                    >
+                      {languageLabels[language]}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+
+              <fieldset
+                className="mt-5"
+                disabled={preparing || pendingSettings}
+              >
+                <legend className="text-sm font-medium">Difficulty</legend>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {difficulties.map((difficulty) => (
+                    <button
+                      key={difficulty}
+                      type="button"
+                      onClick={() =>
+                        onUpdateSettings({
+                          ...room.settings,
+                          difficulty,
+                        })
+                      }
+                      aria-pressed={room.settings.difficulty === difficulty}
+                      className={`rounded-full border px-3 py-2 text-sm transition ${
+                        room.settings.difficulty === difficulty
+                          ? "border-amber-500 bg-amber-950 font-semibold text-amber-300"
+                          : "border-slate-700 bg-white text-slate-500 hover:border-amber-500"
+                      } disabled:cursor-not-allowed disabled:opacity-60`}
+                    >
+                      {difficultyLabels[difficulty]}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+
+              <fieldset
+                className="mt-5"
+                disabled={preparing || pendingSettings}
+              >
+                <legend className="text-sm font-medium">Race time</legend>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {durations.map((durationSeconds) => (
+                    <button
+                      key={durationSeconds}
+                      type="button"
+                      onClick={() =>
+                        onUpdateSettings({
+                          ...room.settings,
+                          durationSeconds,
+                        })
+                      }
+                      aria-pressed={
+                        room.settings.durationSeconds === durationSeconds
+                      }
+                      className={`rounded-full border px-3 py-2 text-sm transition ${
+                        room.settings.durationSeconds === durationSeconds
+                          ? "border-emerald-500 bg-emerald-950 font-semibold text-emerald-300"
+                          : "border-slate-700 bg-white text-slate-500 hover:border-emerald-500"
+                      } disabled:cursor-not-allowed disabled:opacity-60`}
+                    >
+                      {durationLabels[durationSeconds]}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+
+              {pendingSettings ? (
+                <p className="mt-3 text-xs text-slate-500">
+                  Saving room settings…
+                </p>
+              ) : null}
+
               <label className="mt-6 flex items-start gap-3 text-sm">
                 <input
                   type="checkbox"
@@ -94,7 +218,7 @@ export function LobbyScreen({
                   onChange={(event) =>
                     onRequestAiChallengeChange(event.target.checked)
                   }
-                  disabled={preparing || pendingStart}
+                  disabled={preparing || pendingStart || pendingSettings}
                   className="mt-0.5 h-4 w-4 accent-cyan-400"
                 />
                 <span>
@@ -111,7 +235,11 @@ export function LobbyScreen({
                 type="button"
                 onClick={onStartRace}
                 disabled={
-                  preparing || pendingStart || !connected || !hasEnoughPlayers
+                  preparing ||
+                  pendingStart ||
+                  !connected ||
+                  !hasEnoughPlayers ||
+                  pendingSettings
                 }
                 className="game-primary mt-6 w-full px-5 py-3"
               >
@@ -128,9 +256,31 @@ export function LobbyScreen({
               ) : null}
             </>
           ) : (
-            <p className="mt-6 rounded-2xl bg-white px-4 py-3 text-center text-sm text-slate-500">
-              🐛 Waiting for the host to start the race.
-            </p>
+            <div className="mt-6 rounded-2xl bg-white px-4 py-4 text-sm">
+              <dl className="grid gap-4 sm:grid-cols-3">
+                <div>
+                  <dt className="text-slate-500">Language</dt>
+                  <dd className="mt-1 font-semibold">
+                    {languageLabels[room.settings.language]}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">Difficulty</dt>
+                  <dd className="mt-1 font-semibold">
+                    {difficultyLabels[room.settings.difficulty]}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">Race time</dt>
+                  <dd className="mt-1 font-semibold">
+                    {durationLabels[room.settings.durationSeconds]}
+                  </dd>
+                </div>
+              </dl>
+              <p className="mt-4 text-center text-slate-500">
+                🐛 Waiting for the host to start…
+              </p>
+            </div>
           )}
         </aside>
       </div>

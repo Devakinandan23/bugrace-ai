@@ -20,9 +20,25 @@ export type PlayerStatus =
 
 export type RaceFinishReason = "ALL_SUBMITTED" | "DEADLINE_REACHED";
 
-export type ParticipantOutcome = "SUBMITTED" | "TIME_EXPIRED";
+export type ParticipantOutcome =
+  "SUBMITTED" | "EVALUATION_FAILED" | "TIME_EXPIRED";
 
 export type EvaluationSource = "OPENAI" | "MOCK" | "MOCK_FALLBACK";
+
+export type ChallengeLanguage =
+  "JAVASCRIPT" | "TYPESCRIPT" | "CPP" | "JAVA" | "PYTHON";
+
+export type ChallengeDifficulty = "EASY" | "MEDIUM" | "HARD";
+
+export type RaceDurationSeconds = 60 | 120 | 180 | 300;
+
+export type ChallengeSource = "CURATED" | "AI_GENERATED";
+
+export interface PublicRoomSettings {
+  language: ChallengeLanguage;
+  difficulty: ChallengeDifficulty;
+  durationSeconds: RaceDurationSeconds;
+}
 
 export interface ScoreBreakdown {
   rootCauseScore: number;
@@ -56,6 +72,7 @@ export interface PublicRoomState {
   code: string;
   status: RoomStatus;
   hostPlayerId: string;
+  settings: PublicRoomSettings;
   players: PublicPlayer[];
 }
 
@@ -63,11 +80,10 @@ export interface PublicChallenge {
   id: string;
   title: string;
   scenario: string;
-  language: "typescript";
-  topic: "ASYNC_JAVASCRIPT" | "AUTHORIZATION" | "CONCURRENCY";
-  difficulty: "EASY" | "MEDIUM" | "HARD";
+  language: ChallengeLanguage;
+  difficulty: ChallengeDifficulty;
   buggyCode: string;
-  source: "CURATED" | "AI_GENERATED";
+  source: ChallengeSource;
 }
 
 export interface ChallengeFallbackPayload {
@@ -148,6 +164,7 @@ export interface LeaderboardEntry {
 export interface FinalRaceResult {
   roomCode: string;
   challengeId: string;
+  settings: PublicRoomSettings;
   startsAt: number;
   endsAt: number;
   finishedAt: number;
@@ -190,6 +207,15 @@ export interface ClientToServerEvents {
   "room:join": (
     payload: { username: string; roomCode: string },
     acknowledge: (response: AckResult<RoomMembershipData>) => void,
+  ) => void;
+  "room:update-settings": (
+    payload: {
+      roomCode: string;
+      language: ChallengeLanguage;
+      difficulty: ChallengeDifficulty;
+      durationSeconds: RaceDurationSeconds;
+    },
+    acknowledge: (response: AckResult<PublicRoomState>) => void,
   ) => void;
   "race:start": (
     payload: { roomCode: string; generateChallenge?: boolean },
