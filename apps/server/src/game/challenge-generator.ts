@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
-import type { PublicRoomSettings } from "@bugrace/shared";
+import type { ChallengeDifficulty, PublicRoomSettings } from "@bugrace/shared";
 import { z } from "zod";
 
 import type { env } from "../config/env.js";
@@ -22,6 +22,23 @@ not require execution, external files, dependencies or internet access.
 The buggy code must contain at most 25 non-empty lines.
 The buggy code must use the requested language and valid syntax for that
 language. The challenge difficulty must be appropriate to the requested level.
+Use the requested category and do not replace it with a similar category.
+
+Difficulty rules:
+- EASY: 5-10 non-empty lines. Use only familiar beginner constructs such as
+  variables, if statements, basic loops, arrays/lists, strings, object fields
+  and function returns. The defect must be directly visible. Do not use async,
+  promises, futures, coroutines, concurrency, advanced generics or obscure
+  library APIs.
+- MEDIUM: 10-18 non-empty lines. The defect may span a few related lines and
+  may involve common collection transformations, error handling, state updates,
+  validation or familiar asynchronous code.
+- HARD: 15-25 non-empty lines. The defect may involve concurrency, ordering,
+  shared mutation, stale state, resource cleanup or language-specific behavior.
+
+Prefer methods and functions commonly taught and used in the requested
+language. Avoid framework-specific APIs unless the requested category requires
+them.
 
 Provide:
 - a short title;
@@ -48,8 +65,65 @@ Do not create:
 - external URLs;
 - package-installation instructions.`;
 
+const challengeCategories = [
+  "CONDITIONAL_LOGIC",
+  "LOOP_BOUNDARY",
+  "MISSING_RETURN",
+  "WRONG_VARIABLE",
+  "STRING_OR_COLLECTION",
+  "ASYNC_COLLECTION",
+  "ERROR_HANDLING",
+  "STATE_UPDATE",
+  "COLLECTION_TRANSFORM",
+  "DATA_VALIDATION",
+  "CONCURRENCY_ORDERING",
+  "SHARED_MUTATION",
+  "STALE_STATE",
+  "RESOURCE_CLEANUP",
+  "LANGUAGE_SEMANTICS",
+] as const;
+
+type ChallengeCategory = (typeof challengeCategories)[number];
+
+const categoriesByDifficulty: Record<
+  ChallengeDifficulty,
+  readonly ChallengeCategory[]
+> = {
+  EASY: [
+    "CONDITIONAL_LOGIC",
+    "LOOP_BOUNDARY",
+    "MISSING_RETURN",
+    "WRONG_VARIABLE",
+    "STRING_OR_COLLECTION",
+  ],
+  MEDIUM: [
+    "ASYNC_COLLECTION",
+    "ERROR_HANDLING",
+    "STATE_UPDATE",
+    "COLLECTION_TRANSFORM",
+    "DATA_VALIDATION",
+  ],
+  HARD: [
+    "CONCURRENCY_ORDERING",
+    "SHARED_MUTATION",
+    "STALE_STATE",
+    "RESOURCE_CLEANUP",
+    "LANGUAGE_SEMANTICS",
+  ],
+};
+
+const maximumLinesByDifficulty: Record<ChallengeDifficulty, number> = {
+  EASY: 10,
+  MEDIUM: 18,
+  HARD: 25,
+};
+
+const easyDisallowedConceptPattern =
+  /\b(?:async|await|promise|future|coroutine|concurren(?:cy|t)|thread|mutex|semaphore|race condition)\b/i;
+
 export const generatedChallengeSchema = z
   .object({
+    category: z.enum(challengeCategories),
     title: z.string().trim().min(5).max(80),
     scenario: z.string().trim().min(20).max(300),
     language: z.enum(["JAVASCRIPT", "TYPESCRIPT", "CPP", "JAVA", "PYTHON"]),
@@ -157,6 +231,7 @@ export function validateGeneratedChallenge(
   input: unknown,
   settings: PublicRoomSettings,
   recentFingerprints: ReadonlySet<string> = new Set(),
+  requestedCategory?: ChallengeCategory,
 ): GeneratedChallenge {
   const parsed = generatedChallengeSchema.safeParse(input);
 
@@ -188,10 +263,43 @@ export function validateGeneratedChallenge(
     );
   }
 
-  if (nonEmptyLines > 25) {
+  if (
+    !categoriesByDifficulty[settings.difficulty].includes(challenge.category)
+  ) {
     throw new ChallengeGenerationError(
       "INVALID",
-      "Generated challenge exceeds 25 non-empty lines.",
+      "Generated challenge category does not match the requested difficulty.",
+    );
+  }
+
+  if (requestedCategory && challenge.category !== requestedCategory) {
+    throw new ChallengeGenerationError(
+      "INVALID",
+      "Generated challenge does not match the requested category.",
+    );
+  }
+
+  if (nonEmptyLines > maximumLinesByDifficulty[settings.difficulty]) {
+    throw new ChallengeGenerationError(
+      "INVALID",
+      `Generated ${settings.difficulty.toLowerCase()} challenge exceeds its line limit.`,
+    );
+  }
+
+  if (
+    settings.difficulty === "EASY" &&
+    easyDisallowedConceptPattern.test(
+      [
+        challenge.buggyCode,
+        challenge.rootCause,
+        challenge.referenceFix,
+        ...challenge.requiredConcepts,
+      ].join("\n"),
+    )
+  ) {
+    throw new ChallengeGenerationError(
+      "INVALID",
+      "Generated easy challenge uses concepts reserved for harder difficulties.",
     );
   }
 
@@ -276,6 +384,11 @@ function responseContainsRefusal(response: unknown): boolean {
 
 export class OpenAIChallengeGenerator implements ChallengeGenerator {
   private readonly recentFingerprints = new Set<string>();
+  private readonly nextCategoryIndex: Record<ChallengeDifficulty, number> = {
+    EASY: 0,
+    MEDIUM: 0,
+    HARD: 0,
+  };
 
   constructor(
     private readonly openai: OpenAI,
@@ -285,6 +398,11 @@ export class OpenAIChallengeGenerator implements ChallengeGenerator {
 
   async generate(settings: PublicRoomSettings): Promise<GeneratedChallenge> {
     try {
+      const categories = categoriesByDifficulty[settings.difficulty];
+      const categoryIndex =
+        this.nextCategoryIndex[settings.difficulty] % categories.length;
+      const category = categories[categoryIndex];
+
       const response = await this.openai.responses.parse(
         {
           model: this.model,
@@ -296,6 +414,7 @@ export class OpenAIChallengeGenerator implements ChallengeGenerator {
               content: JSON.stringify({
                 language: settings.language,
                 difficulty: settings.difficulty,
+                category,
               }),
             },
           ],
@@ -327,8 +446,10 @@ export class OpenAIChallengeGenerator implements ChallengeGenerator {
         response.output_parsed,
         settings,
         this.recentFingerprints,
+        category,
       );
       this.recentFingerprints.add(challengeFingerprint(challenge.public));
+      this.nextCategoryIndex[settings.difficulty] = categoryIndex + 1;
 
       if (this.recentFingerprints.size > 20) {
         const oldestFingerprint = this.recentFingerprints.values().next().value;

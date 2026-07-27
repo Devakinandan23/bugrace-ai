@@ -20,6 +20,7 @@ const settings = {
 
 function validOutput() {
   return {
+    category: "ASYNC_COLLECTION" as const,
     title: "Overlapping Balance Updates",
     scenario:
       "Two requests adjust one account balance at nearly the same time, but one completed adjustment disappears.",
@@ -67,6 +68,29 @@ function validPythonOutput() {
   };
 }
 
+function validEasyOutput() {
+  return {
+    category: "MISSING_RETURN" as const,
+    title: "Missing Checkout Result",
+    scenario:
+      "A checkout helper calculates the discounted total, but its caller receives no value to display.",
+    language: "TYPESCRIPT" as const,
+    difficulty: "EASY" as const,
+    buggyCode: `function discountedPrice(price: number, percent: number) {
+  const discount = price * (percent / 100);
+  const finalPrice = price - discount;
+}`,
+    rootCause:
+      "The function calculates finalPrice but never returns it, so callers receive undefined instead of the discounted total.",
+    referenceFix: "Return finalPrice after calculating the discount.",
+    requiredConcepts: ["missing return", "calculated result"],
+    acceptedAlternatives: [
+      "Return price minus the calculated discount directly.",
+    ],
+    invalidFixes: ["Print finalPrice without returning it."],
+  };
+}
+
 function fakeOpenAI(
   parse: (body?: unknown, options?: unknown) => Promise<unknown>,
 ): OpenAI {
@@ -93,17 +117,42 @@ test("valid Python generated challenge is accepted", () => {
   assert.equal(challenge.public.source, "AI_GENERATED");
 });
 
-test("generated challenge with more than 25 non-empty lines is rejected", () => {
+test("generated medium challenge with more than 18 non-empty lines is rejected", () => {
   const output = {
     ...validOutput(),
     buggyCode: Array.from(
-      { length: 26 },
+      { length: 19 },
       (_, index) => `const value${index} = ${index};`,
     ).join("\n"),
   };
 
   assert.throws(
     () => validateGeneratedChallenge(output, settings),
+    ChallengeGenerationError,
+  );
+});
+
+test("generated easy challenge accepts familiar beginner constructs", () => {
+  const easySettings = { ...settings, difficulty: "EASY" } as const;
+  const challenge = validateGeneratedChallenge(validEasyOutput(), easySettings);
+
+  assert.equal(challenge.public.difficulty, "EASY");
+  assert.equal(challenge.public.title, "Missing Checkout Result");
+});
+
+test("generated easy challenge rejects asynchronous concepts", () => {
+  const easySettings = { ...settings, difficulty: "EASY" } as const;
+  const output = {
+    ...validEasyOutput(),
+    buggyCode: `async function discountedPrice(price: number) {
+  return await loadDiscount(price);
+}`,
+    rootCause:
+      "The asynchronous function waits for a discount in a challenge intended to use only beginner constructs.",
+  };
+
+  assert.throws(
+    () => validateGeneratedChallenge(output, easySettings),
     ChallengeGenerationError,
   );
 });
@@ -221,7 +270,7 @@ test("OpenAI generator uses one structured Responses call without tools or stora
   const body = request as {
     store?: boolean;
     tools?: unknown;
-    input?: Array<{ role?: string }>;
+    input?: Array<{ role?: string; content?: string }>;
     text?: { format?: unknown };
   };
 
@@ -233,17 +282,35 @@ test("OpenAI generator uses one structured Responses call without tools or stora
     body.input?.map((item) => item.role),
     ["system", "user"],
   );
+  assert.match(body.input?.[0]?.content ?? "", /EASY: 5-10 non-empty lines/);
+  assert.deepEqual(JSON.parse(body.input?.[1]?.content ?? "{}"), {
+    language: "TYPESCRIPT",
+    difficulty: "MEDIUM",
+    category: "ASYNC_COLLECTION",
+  });
   assert.ok(body.text?.format);
   assert.deepEqual(requestOptions, { timeout: 15_000, maxRetries: 0 });
 });
 
 test("generator rejects the same recent model output on a later call", async () => {
+  let calls = 0;
   const generator = new OpenAIChallengeGenerator(
-    fakeOpenAI(async () => ({
-      status: "completed",
-      output: [],
-      output_parsed: validOutput(),
-    })),
+    fakeOpenAI(async () => {
+      const output = {
+        ...validOutput(),
+        category:
+          calls === 0
+            ? ("ASYNC_COLLECTION" as const)
+            : ("ERROR_HANDLING" as const),
+      };
+      calls += 1;
+
+      return {
+        status: "completed",
+        output: [],
+        output_parsed: output,
+      };
+    }),
     "test-model",
     15_000,
   );

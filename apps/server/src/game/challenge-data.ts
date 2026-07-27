@@ -1,6 +1,10 @@
 import type { PublicChallenge, PublicRoomSettings } from "@bugrace/shared";
 
-import { createCuratedPublicChallenge, publicChallenge } from "./challenge.js";
+import {
+  createCuratedPublicChallenge,
+  getCuratedChallengeVariantCount,
+  publicChallenge,
+} from "./challenge.js";
 import {
   createPrivateEvaluationData,
   privateEvaluationData,
@@ -29,11 +33,22 @@ export const curatedChallenge: StoredChallenge = {
   private: privateEvaluationData,
 };
 
+const nextVariantBySettings = new Map<string, number>();
+
 export function getCuratedChallenge(
   settings: PublicRoomSettings,
 ): StoredChallenge {
+  const selectionKey = `${settings.language}:${settings.difficulty}`;
+  const variantCount = getCuratedChallengeVariantCount(settings.difficulty);
+  const variantIndex = nextVariantBySettings.get(selectionKey) ?? 0;
+  nextVariantBySettings.set(selectionKey, (variantIndex + 1) % variantCount);
+
   return {
-    public: createCuratedPublicChallenge(settings),
-    private: createPrivateEvaluationData(settings.language),
+    public: createCuratedPublicChallenge(settings, variantIndex),
+    private: createPrivateEvaluationData(
+      settings.language,
+      settings.difficulty,
+      variantIndex,
+    ),
   };
 }

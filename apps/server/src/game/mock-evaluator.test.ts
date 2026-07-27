@@ -66,6 +66,122 @@ test("prompt injection text cannot change deterministic scoring", async () => {
   );
 });
 
+test("mock evaluator recognizes the easy missing-return fix", async () => {
+  const result = await mockSubmissionEvaluator.evaluate({
+    challenge: {
+      ...baseInput.challenge,
+      title: "The Missing Checkout Result",
+      difficulty: "EASY",
+      buggyCode:
+        "function discountedPrice(price, percent) {\n  const finalPrice = price - price * percent / 100;\n}",
+    },
+    rubric: {
+      rootCause:
+        "The function calculates the result but never returns it to the caller.",
+      referenceFix: "Return finalPrice.",
+      requiredConcepts: ["missing return", "calculated result"],
+      acceptedAlternatives: ["Return the calculation directly."],
+      invalidFixes: ["Print the value."],
+    },
+    submission: {
+      explanation: "The function never returns the calculated discount result.",
+      proposedFix: "return finalPrice;",
+    },
+  });
+
+  assert.deepEqual(
+    [result.rootCauseScore, result.fixScore, result.reasoningScore],
+    [35, 35, 20],
+  );
+  assert.deepEqual(result.missingConcepts, []);
+});
+
+test("mock evaluator recognizes every rotating easy challenge type", async () => {
+  const cases = [
+    {
+      title: "The Backwards Shipping Rule",
+      explanation:
+        "The comparison is reversed. Free shipping should apply at the minimum threshold of 50 or more.",
+      proposedFix: "return total >= 50;",
+    },
+    {
+      title: "The Missing Final Score",
+      explanation: "The loop boundary stops early, so it skips the last score.",
+      proposedFix:
+        "for (let index = 0; index < scores.length; index++) total += scores[index];",
+    },
+    {
+      title: "The Forgotten Bonus",
+      explanation:
+        "It returns points instead of the calculated total, so the bonus is lost.",
+      proposedFix: "return total;",
+    },
+    {
+      title: "The Stock That Never Changes",
+      explanation:
+        "The subtraction result is not assigned, so the original stock stays unchanged.",
+      proposedFix: "remaining -= sold; return remaining;",
+    },
+  ];
+
+  for (const testCase of cases) {
+    const result = await mockSubmissionEvaluator.evaluate({
+      challenge: {
+        ...baseInput.challenge,
+        title: testCase.title,
+        difficulty: "EASY",
+      },
+      rubric: baseInput.rubric,
+      submission: {
+        explanation: testCase.explanation,
+        proposedFix: testCase.proposedFix,
+      },
+    });
+
+    assert.deepEqual(
+      [result.rootCauseScore, result.fixScore, result.reasoningScore],
+      [35, 35, 20],
+      testCase.title,
+    );
+    assert.deepEqual(result.missingConcepts, [], testCase.title);
+  }
+});
+
+test("mock evaluator recognizes the hard atomic reservation fix", async () => {
+  const result = await mockSubmissionEvaluator.evaluate({
+    challenge: {
+      ...baseInput.challenge,
+      title: "The Double-Booked Seats",
+      difficulty: "HARD",
+      buggyCode:
+        "const next = remainingSeats - count;\nawait saveReservation(count);\nremainingSeats = next;",
+    },
+    rubric: {
+      rootCause: "Concurrent calls overwrite the same stale shared state.",
+      referenceFix: "Protect the check and update with an atomic transaction.",
+      requiredConcepts: [
+        "race condition",
+        "stale shared state",
+        "atomic update",
+      ],
+      acceptedAlternatives: ["Serialize reservations with a lock."],
+      invalidFixes: ["Await saveReservation twice."],
+    },
+    submission: {
+      explanation:
+        "This is a race condition: concurrent calls read the same remaining seats and overwrite stale shared state.",
+      proposedFix:
+        "Use a transaction or lock so the availability check and update are atomic.",
+    },
+  });
+
+  assert.deepEqual(
+    [result.rootCauseScore, result.fixScore, result.reasoningScore],
+    [35, 35, 20],
+  );
+  assert.deepEqual(result.missingConcepts, []);
+});
+
 test("mock evaluator recognizes C++ std::future collection fixes", async () => {
   const result = await mockSubmissionEvaluator.evaluate({
     challenge: {
